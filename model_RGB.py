@@ -96,6 +96,7 @@ class Video_Caption_Generator():
 
         ############################# Decoding Stage ######################################
         with tf.variable_scope(tf.get_variable_scope()) as scope:
+            generated_words = []
             for i in range(0, self.n_caption_lstm_step):
                 with tf.device("/cpu:0"):
                     current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
@@ -126,6 +127,9 @@ class Video_Caption_Generator():
                 onehot_labels = tf.sparse_to_dense(concated, tf.stack([self.batch_size, self.n_words]), 1.0, 0.0)
 
                 logit_words = tf.nn.xw_plus_b(output2, self.embed_word_W, self.embed_word_b)
+                max_prob_index = tf.argmax(logit_words, 1) # b,1
+                generated_words.append(max_prob_index) # batch of words at time t
+
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=logit_words, labels=onehot_labels)
                 cross_entropy = cross_entropy * caption_mask[:,i]
 
@@ -134,9 +138,12 @@ class Video_Caption_Generator():
                 current_loss = tf.reduce_sum(cross_entropy)/self.batch_size
                 loss = loss + current_loss
 
+        generated_words = tf.stack(generated_words) # t,b
+        generated_words = tf.transpose(generated_words) # b,t
+
         self._params_usage()
 
-        return loss, video, video_mask, caption, caption_mask, probs
+        return loss, video, video_mask, caption, caption_mask, probs, generated_words
 
 
     def build_generator(self):
@@ -216,10 +223,9 @@ class Video_Caption_Generator():
 #=====================================================================================
 # Global Parameters
 #=====================================================================================
-video_path = '/home/zhiyong/final_project/data/MSVD/YouTubeClips'
 
-video_train_feat_path = './rgb_train_features_tf'
-video_test_feat_path = './rgb_test_features_tf'
+video_train_feat_path = './features'
+video_test_feat_path = './features'
 
 video_train_data_path = './data/video_corpus.csv'
 video_test_data_path = './data/video_corpus.csv'
@@ -233,7 +239,7 @@ dim_image = 4096
 dim_hidden= 512
 
 n_video_lstm_step = 80
-n_caption_lstm_step = 20
+n_caption_lstm_step = 30
 n_frame_step = 80
 
 n_epochs = 1000
@@ -307,7 +313,21 @@ def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
 
     return wordtoix, ixtoword, bias_init_vector
 
+def word_indices_to_sentence(ixtoword, generated_word_index):
+
+    generated_words = ixtoword[generated_word_index]
+
+    punctuation = np.argmax(np.array(generated_words) == '<eos>') + 1
+    generated_words = generated_words[:punctuation]
+
+    generated_sentence = ' '.join(generated_words)
+    generated_sentence = generated_sentence.replace('<bos> ', '')
+    generated_sentence = generated_sentence.replace(' <eos>', '')
+
+    return generated_sentence
+
 def train():
+    ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
     train_captions = train_data['Description'].values
     test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
@@ -325,12 +345,14 @@ def train():
     captions = [x.replace('\\', '') for x in captions]
     captions = [x.replace('/', '') for x in captions]
 
+    ## vocab
     wordtoix, ixtoword, bias_init_vector = preProBuildWordVocab(captions, word_count_threshold=0)
 
     np.save("./data/wordtoix", wordtoix)
     np.save('./data/ixtoword', ixtoword)
     np.save("./data/bias_init_vector", bias_init_vector)
 
+    ## model & ops
     model = Video_Caption_Generator(
             dim_image=dim_image,
             n_words=len(wordtoix),
@@ -341,10 +363,10 @@ def train():
             n_caption_lstm_step=n_caption_lstm_step,
             bias_init_vector=bias_init_vector)
 
-    tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs = model.build_model()
+    tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted = model.build_model()
     sess = tf.InteractiveSession()
 
-    # my tensorflow version is 0.12.1, I write the saver with version 1.0
+    # train op, init
     saver = tf.train.Saver(max_to_keep=50)
     train_op = tf.train.AdamOptimizer(learning_rate).minimize(tf_loss)
     tf.global_variables_initializer().run()
@@ -363,7 +385,7 @@ def train():
         np.random.shuffle(index)
         train_data = train_data.ix[index]
 
-        current_train_data = train_data.groupby('video_path').apply(lambda x: x.iloc[np.random.choice(len(x))])
+        current_train_data = train_data.groupby('video_path').apply(lambda x: x.iloc[np.random.choice(len(x))]) # sample one discrp.
         current_train_data = current_train_data.reset_index(drop=True)
 
         for start, end in zip(
@@ -377,6 +399,8 @@ def train():
 
             current_feats = np.zeros((batch_size, n_video_lstm_step, dim_image))
             current_feats_vals = [np.load(vid) for vid in current_videos]
+            print('for each in current batch :', [x.shape for x in current_feats_vals])
+            input() # to test weather the following padding is required
 
             current_video_masks = np.zeros((batch_size, n_video_lstm_step))
 
@@ -395,16 +419,18 @@ def train():
             current_captions = [x.replace('\\', '') for x in current_captions]
             current_captions = [x.replace('/', '') for x in current_captions]
 
+            ## add marks for captions
             for idx, each_cap in enumerate(current_captions):
-                word = each_cap.lower().split(' ')
-                if len(word) < n_caption_lstm_step:
+                word_seq = each_cap.lower().split(' ')
+                if len(word_seq) < n_caption_lstm_step:
                     current_captions[idx] = current_captions[idx] + ' <eos>'
                 else:
                     new_word = ''
                     for i in range(n_caption_lstm_step-1):
-                        new_word = new_word + word[i] + ' '
+                        new_word = new_word + word_seq[i] + ' '
                     current_captions[idx] = new_word + '<eos>'
 
+            ## turn word to index
             current_caption_ind = []
             for cap in current_captions:
                 current_word_ind = []
@@ -415,21 +441,21 @@ def train():
                         current_word_ind.append(wordtoix['<unk>'])
                 current_caption_ind.append(current_word_ind)
 
-            current_caption_matrix = pad_sequences(current_caption_ind, padding='post', maxlen=n_caption_lstm_step)
+            current_caption_matrix = pad_sequences(current_caption_ind, padding='post', maxlen=n_caption_lstm_step) # b,caplen
             current_caption_matrix = np.hstack( [current_caption_matrix, np.zeros( [len(current_caption_matrix), 1] ) ] ).astype(int)
-            current_caption_masks = np.zeros( (current_caption_matrix.shape[0], current_caption_matrix.shape[1]) )
+            current_caption_masks = np.zeros_like(current_caption_matrix, dtype=int)#( (current_caption_matrix.shape[0], current_caption_matrix.shape[1]) )
             nonzeros = np.array( [(x != 0).sum() + 1 for x in current_caption_matrix] )
 
-            for ind, row in enumerate(current_caption_masks):
+            for ind, row in enumerate(current_caption_masks): # set mask
                 row[:nonzeros[ind]] = 1
 
-            probs_val = sess.run(tf_probs, feed_dict={
-                tf_video:current_feats,
-                tf_caption: current_caption_matrix
-                })
+            # probs_val = sess.run(tf_probs, feed_dict={
+            #     tf_video:current_feats,
+            #     tf_caption: current_caption_matrix
+            #     })
 
-            _, loss_val = sess.run(
-                    [train_op, tf_loss],
+            _, loss_val, predicted_captions = sess.run(
+                    [train_op, tf_loss, tf_predicted],
                     feed_dict={
                         tf_video: current_feats,
                         tf_video_mask : current_video_masks,
@@ -439,7 +465,11 @@ def train():
             loss_to_draw_epoch.append(loss_val)
 
             print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
-            loss_fd.write('epoch ' + str(epoch) + ' loss ' + str(loss_val) + '\n')
+            i = np.random.choice(len(predicted_captions))
+            result = 'caption #{}: predicted={}, ground={}'.format(i, predicted_captions[i], current_caption_matrix[i])
+            print(result)
+            loss_fd.write('epoch {}, iter {}, loss {}\n {}'.format(epoch, start, loss_val, result))
+
 
         # draw loss curve every epoch
         loss_to_draw.append(np.mean(loss_to_draw_epoch))
@@ -497,14 +527,15 @@ def test(model_path='./models/model-910'):
             #video_mask = np.ones((video_feat.shape[0], n_frame_step))
 
         generated_word_index = sess.run(caption_tf, feed_dict={video_tf:video_feat, video_mask_tf:video_mask})
-        generated_words = ixtoword[generated_word_index]
-
-        punctuation = np.argmax(np.array(generated_words) == '<eos>') + 1
-        generated_words = generated_words[:punctuation]
-
-        generated_sentence = ' '.join(generated_words)
-        generated_sentence = generated_sentence.replace('<bos> ', '')
-        generated_sentence = generated_sentence.replace(' <eos>', '')
+        # generated_words = ixtoword[generated_word_index]
+        #
+        # punctuation = np.argmax(np.array(generated_words) == '<eos>') + 1
+        # generated_words = generated_words[:punctuation]
+        #
+        # generated_sentence = ' '.join(generated_words)
+        # generated_sentence = generated_sentence.replace('<bos> ', '')
+        # generated_sentence = generated_sentence.replace(' <eos>', '')
+        generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
         print(generated_sentence,'\n')
         test_output_txt_fd.write(video_feat_path + '\n')
         test_output_txt_fd.write(generated_sentence + '\n\n')
