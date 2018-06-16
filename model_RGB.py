@@ -7,6 +7,7 @@ import numpy as np
 import pandas as pd
 import tensorflow as tf
 from utils import pad_sequences
+from bleu_eval import BLEU
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -347,7 +348,7 @@ def word_indices_to_sentence(ixtoword, generated_word_indices):
 
     return generated_sentence
 
-def add_custom_summ(self, tagname, tagvalue, writer, iters):
+def add_custom_summ(tagname, tagvalue, writer, iters):
     psnr_summ = tf.Summary()
     node = psnr_summ.value.add()
     node.tag = tagname
@@ -506,13 +507,14 @@ def train():
             i = np.random.choice(len(predicted_captions))
             predicted_sent = word_indices_to_sentence(ixtoword, predicted_captions[i])
             ground_sent = word_indices_to_sentence(ixtoword, current_caption_matrix[i])
-            result = 'caption #{}: \npredicted="{}", \ngroundtru="{}"'.format(i, predicted_sent, ground_sent)
+            bleu = BLEU(predicted_sent, ground_sent)
+            result = 'caption #{}: bleu={}\npredicted="{}", \ngroundtru="{}"'.format(i, bleu, predicted_sent, ground_sent)
             print(result)
             loss_fd.write('epoch {}, iter {}, loss {}\n {}'.format(epoch, start, loss_val, result))
 
             if step % summ_freq == 0:
                 summ_writer.add_summary(ret[3], step)
-                add_custom_summ(xent / summ_freq)
+                add_custom_summ(tagname='xent',tagvalue=xent / summ_freq,writer=summ_writer,iters=step)
                 xent = 0.
             step += 1
 
