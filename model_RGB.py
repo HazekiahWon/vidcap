@@ -317,9 +317,9 @@ def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
 
     return wordtoix, ixtoword, bias_init_vector
 
-def word_indices_to_sentence(ixtoword, generated_word_index):
+def word_indices_to_sentence(ixtoword, generated_word_indices):
 
-    generated_words = ixtoword[generated_word_index]
+    generated_words = [ixtoword[idx] for idx in generated_word_indices]
 
     punctuation = np.argmax(np.array(generated_words) == '<eos>') + 1
     generated_words = generated_words[:punctuation]
