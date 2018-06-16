@@ -466,7 +466,7 @@ def train():
             ops = [train_op, tf_loss, tf_predicted]
             if start % summ_freq == 0:
                 ops.append(summary_op)
-            _, loss_val, predicted_captions = sess.run(
+            ret = sess.run(
                     ops,
                     feed_dict={
                         tf_video: current_feats,
@@ -475,6 +475,8 @@ def train():
                         tf_caption_mask: current_caption_masks
                         })
             # loss_to_draw_epoch.append(loss_val)
+            _, loss_val, predicted_captions = ret[:3]
+
 
             print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
             i = np.random.choice(len(predicted_captions))
@@ -485,7 +487,7 @@ def train():
             loss_fd.write('epoch {}, iter {}, loss {}\n {}'.format(epoch, start, loss_val, result))
 
             if start % summ_freq == 0:
-                summ_writer.add_summary(summary_op)
+                summ_writer.add_summary(ret[3])
 
 
         # draw loss curve every epoch
