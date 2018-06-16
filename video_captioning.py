@@ -24,4 +24,4 @@ else:
 video_feat = utils.extract_video_features(video_full_path)
 generated_sentence = utils.get_caption(video_feat)
 
-print type(generated_sentence)
+print(type(generated_sentence))

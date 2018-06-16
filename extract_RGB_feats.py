@@ -51,7 +51,7 @@ def main():
     video_path='/home/zhiyong/final_project/data/MSVD/YouTubeClips'
     video_save_path = './temp_RGB_feats'
     videos = os.listdir(video_path)
-    videos = filter(lambda x: x.endswith('avi'), videos)
+    videos = [x for x in videos if x.endswith('avi')]
 
     #Load tensorflow VGG16 model
     with open("vgg16.tfmodel", mode='rb') as f:
@@ -65,10 +65,10 @@ def main():
 
     # Processing each video in video_path
     for idx, video in enumerate(videos):
-        print idx, video
+        print(idx, video)
 
         if os.path.exists( os.path.join(video_save_path, video) ):
-            print "Already processed ... "
+            print("Already processed ... ")
             continue
 
         video_fullpath = os.path.join(video_path, video)
@@ -96,7 +96,7 @@ def main():
             frame_indices = np.linspace(0, frame_count, num=num_frames, endpoint=False).astype(int)
             frame_list = frame_list[frame_indices]
 
-        cropped_frame_list = np.asarray(map(lambda x: preprocess_frame(x), frame_list))
+        cropped_frame_list = np.asarray([preprocess_frame(x) for x in frame_list])
 
         #cropped_frame_list is a list of frames, where each frame is a height*width*3 array
         with tf.Session() as sess:
@@ -107,7 +107,7 @@ def main():
 
         save_full_path = os.path.join(video_save_path, video + '.npy')
         np.save(save_full_path, feats)
-        print feats.shape
+        print(feats.shape)
 
 if __name__=="__main__":
     main()

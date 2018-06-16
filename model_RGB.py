@@ -1,14 +1,13 @@
 #-*- coding: utf-8 -*-
-import tensorflow as tf
-import pandas as pd
-import numpy as np
 import os
-import sys
-import ipdb
 import time
-import cv2
-from keras.preprocessing import sequence
+
 import matplotlib
+import numpy as np
+import pandas as pd
+import tensorflow as tf
+from utils import pad_sequences
+
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
@@ -43,6 +42,20 @@ class Video_Caption_Generator():
 
         self.att_W = tf.Variable( tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='att_W')
         self.decoder_W = tf.Variable( tf.random_uniform([self.batch_size, dim_hidden], -0.1, 0.1), name='decoder_W')
+
+    def _params_usage(self):
+        total = 0
+        for v in tf.trainable_variables():
+            shape = v.get_shape()
+            cnt = 1
+            for dim in shape:
+                cnt *= dim.value
+            print('{} with shape {} has {}'.format(v.name, shape, cnt))
+            total += cnt
+        print('totaling {}'.format(total))
+
+        input()
+
 
     def build_model(self):
         video = tf.placeholder(tf.float32, [self.batch_size, self.n_video_lstm_step, self.dim_image])
@@ -121,6 +134,8 @@ class Video_Caption_Generator():
                 current_loss = tf.reduce_sum(cross_entropy)/self.batch_size
                 loss = loss + current_loss
 
+        self._params_usage()
+
         return loss, video, video_mask, caption, caption_mask, probs
 
 
@@ -193,6 +208,8 @@ class Video_Caption_Generator():
 
                 embeds.append(current_embed)
 
+        self._params_usage()
+
         return video, video_mask, generated_words, probs, embeds
 
 
@@ -251,7 +268,7 @@ def get_video_test_data(video_data_path, video_feat_path):
 
 def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
     # borrowed this function from NeuralTalk
-    print 'preprocessing word counts and creating vocab based on word count threshold %d' % (word_count_threshold)
+    print('preprocessing word counts and creating vocab based on word count threshold %d' % (word_count_threshold))
     word_counts = {}
     nsents = 0
     for sent in sentence_iterator:
@@ -260,7 +277,7 @@ def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
         for w in sent.lower().split(' '):
            word_counts[w] = word_counts.get(w, 0) + 1
     vocab = [w for w in word_counts if word_counts[w] >= word_count_threshold]
-    print 'filtered words from %d to %d' % (len(word_counts), len(vocab))
+    print('filtered words from %d to %d' % (len(word_counts), len(vocab)))
 
     ixtoword = {}
     ixtoword[0] = '<pad>'
@@ -299,14 +316,14 @@ def train():
     captions_list = list(train_captions) + list(test_captions)
     captions = np.asarray(captions_list, dtype=np.object)
 
-    captions = map(lambda x: x.replace('.', ''), captions)
-    captions = map(lambda x: x.replace(',', ''), captions)
-    captions = map(lambda x: x.replace('"', ''), captions)
-    captions = map(lambda x: x.replace('\n', ''), captions)
-    captions = map(lambda x: x.replace('?', ''), captions)
-    captions = map(lambda x: x.replace('!', ''), captions)
-    captions = map(lambda x: x.replace('\\', ''), captions)
-    captions = map(lambda x: x.replace('/', ''), captions)
+    captions = [x.replace('.', '') for x in captions]
+    captions = [x.replace(',', '') for x in captions]
+    captions = [x.replace('"', '') for x in captions]
+    captions = [x.replace('\n', '') for x in captions]
+    captions = [x.replace('?', '') for x in captions]
+    captions = [x.replace('!', '') for x in captions]
+    captions = [x.replace('\\', '') for x in captions]
+    captions = [x.replace('/', '') for x in captions]
 
     wordtoix, ixtoword, bias_init_vector = preProBuildWordVocab(captions, word_count_threshold=0)
 
@@ -350,8 +367,8 @@ def train():
         current_train_data = current_train_data.reset_index(drop=True)
 
         for start, end in zip(
-                range(0, len(current_train_data), batch_size),
-                range(batch_size, len(current_train_data), batch_size)):
+                list(range(0, len(current_train_data), batch_size)),
+                list(range(batch_size, len(current_train_data), batch_size))):
 
             start_time = time.time()
 
@@ -359,7 +376,7 @@ def train():
             current_videos = current_batch['video_path'].values
 
             current_feats = np.zeros((batch_size, n_video_lstm_step, dim_image))
-            current_feats_vals = map(lambda vid: np.load(vid), current_videos)
+            current_feats_vals = [np.load(vid) for vid in current_videos]
 
             current_video_masks = np.zeros((batch_size, n_video_lstm_step))
 
@@ -368,15 +385,15 @@ def train():
                 current_video_masks[ind][:len(current_feats_vals[ind])] = 1
 
             current_captions = current_batch['Description'].values
-            current_captions = map(lambda x: '<bos> ' + x, current_captions)
-            current_captions = map(lambda x: x.replace('.', ''), current_captions)
-            current_captions = map(lambda x: x.replace(',', ''), current_captions)
-            current_captions = map(lambda x: x.replace('"', ''), current_captions)
-            current_captions = map(lambda x: x.replace('\n', ''), current_captions)
-            current_captions = map(lambda x: x.replace('?', ''), current_captions)
-            current_captions = map(lambda x: x.replace('!', ''), current_captions)
-            current_captions = map(lambda x: x.replace('\\', ''), current_captions)
-            current_captions = map(lambda x: x.replace('/', ''), current_captions)
+            current_captions = ['<bos> ' + x for x in current_captions]
+            current_captions = [x.replace('.', '') for x in current_captions]
+            current_captions = [x.replace(',', '') for x in current_captions]
+            current_captions = [x.replace('"', '') for x in current_captions]
+            current_captions = [x.replace('\n', '') for x in current_captions]
+            current_captions = [x.replace('?', '') for x in current_captions]
+            current_captions = [x.replace('!', '') for x in current_captions]
+            current_captions = [x.replace('\\', '') for x in current_captions]
+            current_captions = [x.replace('/', '') for x in current_captions]
 
             for idx, each_cap in enumerate(current_captions):
                 word = each_cap.lower().split(' ')
@@ -398,10 +415,10 @@ def train():
                         current_word_ind.append(wordtoix['<unk>'])
                 current_caption_ind.append(current_word_ind)
 
-            current_caption_matrix = sequence.pad_sequences(current_caption_ind, padding='post', maxlen=n_caption_lstm_step)
+            current_caption_matrix = pad_sequences(current_caption_ind, padding='post', maxlen=n_caption_lstm_step)
             current_caption_matrix = np.hstack( [current_caption_matrix, np.zeros( [len(current_caption_matrix), 1] ) ] ).astype(int)
             current_caption_masks = np.zeros( (current_caption_matrix.shape[0], current_caption_matrix.shape[1]) )
-            nonzeros = np.array( map(lambda x: (x != 0).sum() + 1, current_caption_matrix ) )
+            nonzeros = np.array( [(x != 0).sum() + 1 for x in current_caption_matrix] )
 
             for ind, row in enumerate(current_caption_masks):
                 row[:nonzeros[ind]] = 1
@@ -421,19 +438,19 @@ def train():
                         })
             loss_to_draw_epoch.append(loss_val)
 
-            print 'idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time))
+            print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
             loss_fd.write('epoch ' + str(epoch) + ' loss ' + str(loss_val) + '\n')
 
         # draw loss curve every epoch
         loss_to_draw.append(np.mean(loss_to_draw_epoch))
         plt_save_dir = "./loss_imgs"
         plt_save_img_name = str(epoch) + '.png'
-        plt.plot(range(len(loss_to_draw)), loss_to_draw, color='g')
+        plt.plot(list(range(len(loss_to_draw))), loss_to_draw, color='g')
         plt.grid(True)
         plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
 
         if np.mod(epoch, 10) == 0:
-            print "Epoch ", epoch, " is done. Saving the model ..."
+            print("Epoch ", epoch, " is done. Saving the model ...")
             saver.save(sess, os.path.join(model_path, 'model'), global_step=epoch)
 
     loss_fd.close()
@@ -465,7 +482,7 @@ def test(model_path='./models/model-910'):
 
     test_output_txt_fd = open('S2VT_results.txt', 'w')
     for idx, video_feat_path in enumerate(test_videos):
-        print idx, video_feat_path
+        print(idx, video_feat_path)
 
         video_feat = np.load(video_feat_path)[None,...]
         #video_feat = np.load(video_feat_path)
@@ -488,6 +505,6 @@ def test(model_path='./models/model-910'):
         generated_sentence = ' '.join(generated_words)
         generated_sentence = generated_sentence.replace('<bos> ', '')
         generated_sentence = generated_sentence.replace(' <eos>', '')
-        print generated_sentence,'\n'
+        print(generated_sentence,'\n')
         test_output_txt_fd.write(video_feat_path + '\n')
         test_output_txt_fd.write(generated_sentence + '\n\n')
