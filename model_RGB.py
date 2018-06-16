@@ -154,8 +154,9 @@ class Video_Caption_Generator():
         generated_words = tf.stack(generated_words) # t,b
         generated_words = tf.transpose(generated_words) # b,t
         loss = tf.reduce_mean(tf.stack(loss)) # t,b
-        summary_op = tf.summary.merge((tf.summary.scalar('xent', loss),
-                                       tf.summary.histogram('alphas', alphas_)))
+        # summary_op = tf.summary.merge((tf.summary.scalar('xent', loss),
+        #                                tf.summary.histogram('alphas', alphas_)))
+        summary_op = tf.summary.histogram('alphas', alphas_)
 
         self._params_usage()
 
@@ -346,6 +347,14 @@ def word_indices_to_sentence(ixtoword, generated_word_indices):
 
     return generated_sentence
 
+def add_custom_summ(self, tagname, tagvalue, writer, iters):
+    psnr_summ = tf.Summary()
+    node = psnr_summ.value.add()
+    node.tag = tagname
+    node.simple_value = tagvalue
+
+    writer.add_summary(psnr_summ, iters)
+
 def train():
     ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
@@ -490,7 +499,7 @@ def train():
                         })
             # loss_to_draw_epoch.append(loss_val)
             _, loss_val, predicted_captions = ret[:3]
-            xent += ret[3]
+            xent += loss_val
 
 
             print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
@@ -502,7 +511,9 @@ def train():
             loss_fd.write('epoch {}, iter {}, loss {}\n {}'.format(epoch, start, loss_val, result))
 
             if step % summ_freq == 0:
-                summ_writer.add_summary(xent / factor)
+                summ_writer.add_summary(ret[3], step)
+                add_custom_summ(xent / summ_freq)
+                xent = 0.
             step += 1
 
 
