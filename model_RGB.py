@@ -470,7 +470,9 @@ def train():
 
             print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
             i = np.random.choice(len(predicted_captions))
-            result = 'caption #{}: predicted={}, ground={}'.format(i, predicted_captions[i], current_caption_matrix[i])
+            predicted_sent = word_indices_to_sentence(ixtoword, predicted_captions[i])
+            ground_sent = word_indices_to_sentence(ixtoword, current_caption_matrix[i])
+            result = 'caption #{}: predicted={}, ground={}'.format(i, predicted_sent, ground_sent)
             print(result)
             loss_fd.write('epoch {}, iter {}, loss {}\n {}'.format(epoch, start, loss_val, result))
 
