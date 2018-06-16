@@ -101,6 +101,7 @@ class Video_Caption_Generator():
         ############################# Decoding Stage ######################################
         with tf.variable_scope(tf.get_variable_scope()) as scope:
             generated_words = []
+            alphas = []
             for i in range(0, self.n_caption_lstm_step):
                 with tf.device("/cpu:0"):
                     current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
@@ -122,6 +123,9 @@ class Video_Caption_Generator():
                 context = tf.reshape(context, [self.batch_size, -1, self.dim_hidden]) # b * n * h
                 context = tf.reduce_sum(context, axis=1) # b * h
 
+                alphas.append(tf.reshape(alpha, (self.batch_size,-1))) # b,n_frame
+
+
                 with tf.variable_scope("LSTM2"):
                     output2, state2 = self.lstm2(tf.concat(axis=1, values=[current_embed, context, output1]), state2)
 
@@ -142,10 +146,16 @@ class Video_Caption_Generator():
                 # current_loss = tf.reduce_mean(cross_entropy)#/self.batch_size
                 loss.append(cross_entropy)
 
+            # we want each frame is focused approx. the same, should summed up across caps
+            # n_cap * b,n_frame
+            alphas = tf.stack(alphas, axis=-1) # b,n_frame,n_cap
+            alphas_ = tf.reduce_sum(alphas, axis=-1) # b,n_frame
+
         generated_words = tf.stack(generated_words) # t,b
         generated_words = tf.transpose(generated_words) # b,t
         loss = tf.reduce_mean(tf.stack(loss)) # t,b
-        summary_op = tf.summary.scalar('xent', loss)
+        summary_op = tf.summary.merge((tf.summary.scalar('xent', loss),
+                                       tf.summary.histogram('alphas', alphas_)))
 
         self._params_usage()
 
@@ -250,7 +260,8 @@ n_frame_step = 80
 
 n_epochs = 1000
 batch_size = 16
-summ_freq = batch_size*5
+# factor = 31
+summ_freq = 25
 learning_rate = 0.0001
 
 logdir = r'tensorboard'
@@ -388,6 +399,8 @@ def train():
     loss_fd = open('loss.txt', 'w')
     # loss_to_draw = []
 
+    xent = 0.
+    step = 0
     for epoch in range(0, n_epochs):
         # loss_to_draw_epoch = []
 
@@ -401,6 +414,7 @@ def train():
         for start, end in zip(
                 list(range(0, len(current_train_data), batch_size)),
                 list(range(batch_size, len(current_train_data), batch_size))):
+
 
             start_time = time.time()
 
@@ -464,7 +478,7 @@ def train():
             #     tf_caption: current_caption_matrix
             #     })
             ops = [train_op, tf_loss, tf_predicted]
-            if start % summ_freq == 0:
+            if step % summ_freq == 0:
                 ops.append(summary_op)
             ret = sess.run(
                     ops,
@@ -476,6 +490,7 @@ def train():
                         })
             # loss_to_draw_epoch.append(loss_val)
             _, loss_val, predicted_captions = ret[:3]
+            xent += ret[3]
 
 
             print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
@@ -486,8 +501,9 @@ def train():
             print(result)
             loss_fd.write('epoch {}, iter {}, loss {}\n {}'.format(epoch, start, loss_val, result))
 
-            if start % summ_freq == 0:
-                summ_writer.add_summary(ret[3])
+            if step % summ_freq == 0:
+                summ_writer.add_summary(xent / factor)
+            step += 1
 
 
         # draw loss curve every epoch
