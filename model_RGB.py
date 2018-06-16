@@ -77,7 +77,7 @@ class Video_Caption_Generator():
         padding_lstm2 = tf.zeros([self.batch_size, 2*self.dim_hidden])
 
         probs = []
-        loss = 0.0
+        loss = []
 
         ##############################  Encoding Stage ##################################
         with tf.variable_scope(tf.get_variable_scope()) as scope:
@@ -139,15 +139,17 @@ class Video_Caption_Generator():
 
                 probs.append(logit_words)
 
-                current_loss = tf.reduce_sum(cross_entropy)/self.batch_size
-                loss = loss + current_loss
+                # current_loss = tf.reduce_mean(cross_entropy)#/self.batch_size
+                loss.append(cross_entropy)
 
         generated_words = tf.stack(generated_words) # t,b
         generated_words = tf.transpose(generated_words) # b,t
+        loss = tf.reduce_mean(tf.stack(loss)) # t,b
+        summary_op = tf.summary.scalar('xent', loss)
 
         self._params_usage()
 
-        return loss, video, video_mask, caption, caption_mask, probs, generated_words
+        return loss, video, video_mask, caption, caption_mask, probs, generated_words, summary_op
 
 
     def build_generator(self):
@@ -249,6 +251,8 @@ n_frame_step = 80
 n_epochs = 1000
 batch_size = 16
 learning_rate = 0.0001
+
+logdir = r'tensorboard'
 
 
 def get_video_train_data(video_data_path, video_feat_path):
@@ -367,12 +371,13 @@ def train():
             n_caption_lstm_step=n_caption_lstm_step,
             bias_init_vector=bias_init_vector)
 
-    tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted = model.build_model()
+    tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model.build_model()
     sess = tf.InteractiveSession()
 
     # train op, init
-    saver = tf.train.Saver(max_to_keep=50)
+    saver = tf.train.Saver(max_to_keep=10)
     train_op = tf.train.AdamOptimizer(learning_rate).minimize(tf_loss)
+    summ_writer = tf.summary.FileWriter(logdir, graph=tf.get_default_graph())
     tf.global_variables_initializer().run()
 
     #new_saver = tf.train.Saver()
@@ -479,11 +484,12 @@ def train():
 
         # draw loss curve every epoch
         loss_to_draw.append(np.mean(loss_to_draw_epoch))
-        plt_save_dir = "./loss_imgs"
-        plt_save_img_name = str(epoch) + '.png'
-        plt.plot(list(range(len(loss_to_draw))), loss_to_draw, color='g')
-        plt.grid(True)
-        plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
+        summ_writer.add_summary(summary_op)
+        # plt_save_dir = "./loss_imgs"
+        # plt_save_img_name = str(epoch) + '.png'
+        # plt.plot(list(range(len(loss_to_draw))), loss_to_draw, color='g')
+        # plt.grid(True)
+        # plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
 
         if np.mod(epoch, 10) == 0:
             print("Epoch ", epoch, " is done. Saving the model ...")
