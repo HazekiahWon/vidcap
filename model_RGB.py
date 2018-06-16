@@ -68,8 +68,11 @@ class Video_Caption_Generator():
         image_emb = tf.nn.xw_plus_b( video_flat, self.encode_image_W, self.encode_image_b ) # (batch_size*n_lstm_steps, dim_hidden)
         image_emb = tf.reshape(image_emb, [self.batch_size, self.n_video_lstm_step, self.dim_hidden])
 
-        state1 = tf.zeros([self.batch_size, self.lstm1.state_size])
-        state2 = tf.zeros([self.batch_size, self.lstm2.state_size])
+        # state1 = tf.zeros([self.batch_size, self.lstm1.state_size])
+        # state2 = tf.zeros([self.batch_size, self.lstm2.state_size])
+        state1 = self.lstm1.zero_state(self.batch_size, dtype=tf.float32)
+        state2 = self.lstm2.zero_state(self.batch_size, dtype=tf.float32)
+
         padding_lstm1 = tf.zeros([self.batch_size, self.dim_hidden])
         padding_lstm2 = tf.zeros([self.batch_size, 2*self.dim_hidden])
 
@@ -81,6 +84,7 @@ class Video_Caption_Generator():
             for i in range(0, self.n_video_lstm_step):
                 if i > 0:
                     tf.get_variable_scope().reuse_variables()
+
 
                 with tf.variable_scope("LSTM1"):
                     output1, state1 = self.lstm1(image_emb[:,i,:], state1)
