@@ -59,6 +59,7 @@ class Video_Caption_Generator():
 
 
     def build_model(self):
+
         video = tf.placeholder(tf.float32, [self.batch_size, self.n_video_lstm_step, self.dim_image])
         video_mask = tf.placeholder(tf.float32, [self.batch_size, self.n_video_lstm_step])
 
@@ -395,146 +396,148 @@ def train():
             n_caption_lstm_step=n_caption_lstm_step,
             bias_init_vector=bias_init_vector)
 
-    tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model.build_model()
-    sess = tf.InteractiveSession()
+    graph = tf.Graph()
+    with graph.as_default():
+        tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model.build_model()
+        sess = tf.InteractiveSession()
 
-    # train op, init
-    saver = tf.train.Saver(max_to_keep=10)
-    train_op = tf.train.AdamOptimizer(learning_rate).minimize(tf_loss)
-    summ_writer = tf.summary.FileWriter(logdir, graph=tf.get_default_graph())
-    tf.global_variables_initializer().run()
+        # train op, init
+        saver = tf.train.Saver(max_to_keep=10)
+        train_op = tf.train.AdamOptimizer(learning_rate).minimize(tf_loss)
+        summ_writer = tf.summary.FileWriter(logdir, graph=tf.get_default_graph())
+        tf.global_variables_initializer().run()
 
-    #new_saver = tf.train.Saver()
-    #new_saver = tf.train.import_meta_graph('./rgb_models/model-1000.meta')
-    #new_saver.restore(sess, tf.train.latest_checkpoint('./models/'))
+        #new_saver = tf.train.Saver()
+        #new_saver = tf.train.import_meta_graph('./rgb_models/model-1000.meta')
+        #new_saver.restore(sess, tf.train.latest_checkpoint('./models/'))
 
-    loss_fd = open('loss.txt', 'w')
-    # loss_to_draw = []
+        loss_fd = open('loss.txt', 'w')
+        # loss_to_draw = []
 
-    xent = 0.
-    step = 0
-    for epoch in range(0, n_epochs):
-        # loss_to_draw_epoch = []
+        xent = 0.
+        step = 0
+        for epoch in range(0, n_epochs):
+            # loss_to_draw_epoch = []
 
-        index = list(train_data.index)
-        np.random.shuffle(index)
-        train_data = train_data.ix[index]
+            index = list(train_data.index)
+            np.random.shuffle(index)
+            train_data = train_data.ix[index]
 
-        current_train_data = train_data.groupby('video_path').apply(lambda x: x.iloc[np.random.choice(len(x))]) # sample one discrp.
-        current_train_data = current_train_data.reset_index(drop=True)
+            current_train_data = train_data.groupby('video_path').apply(lambda x: x.iloc[np.random.choice(len(x))]) # sample one discrp.
+            current_train_data = current_train_data.reset_index(drop=True)
 
-        for start, end in zip(
-                list(range(0, len(current_train_data), batch_size)),
-                list(range(batch_size, len(current_train_data), batch_size))):
+            for start, end in zip(
+                    list(range(0, len(current_train_data), batch_size)),
+                    list(range(batch_size, len(current_train_data), batch_size))):
 
 
-            start_time = time.time()
+                start_time = time.time()
 
-            current_batch = current_train_data[start:end]
-            current_videos = current_batch['video_path'].values
+                current_batch = current_train_data[start:end]
+                current_videos = current_batch['video_path'].values
 
-            current_feats = np.zeros((batch_size, n_video_lstm_step, dim_image))
-            current_feats_vals = [np.load(vid) for vid in current_videos]
-            # print('for each in current batch :', [x.shape for x in current_feats_vals])
-            # input() # to test weather the following padding is required
+                current_feats = np.zeros((batch_size, n_video_lstm_step, dim_image))
+                current_feats_vals = [np.load(vid) for vid in current_videos]
+                # print('for each in current batch :', [x.shape for x in current_feats_vals])
+                # input() # to test weather the following padding is required
 
-            current_video_masks = np.zeros((batch_size, n_video_lstm_step))
+                current_video_masks = np.zeros((batch_size, n_video_lstm_step))
 
-            for ind,feat in enumerate(current_feats_vals):
-                current_feats[ind][:len(current_feats_vals[ind])] = feat
-                current_video_masks[ind][:len(current_feats_vals[ind])] = 1
+                for ind,feat in enumerate(current_feats_vals):
+                    current_feats[ind][:len(current_feats_vals[ind])] = feat
+                    current_video_masks[ind][:len(current_feats_vals[ind])] = 1
 
-            current_captions = current_batch['Description'].values
-            current_captions = ['<bos> ' + x for x in current_captions]
-            current_captions = [x.replace('.', '') for x in current_captions]
-            current_captions = [x.replace(',', '') for x in current_captions]
-            current_captions = [x.replace('"', '') for x in current_captions]
-            current_captions = [x.replace('\n', '') for x in current_captions]
-            current_captions = [x.replace('?', '') for x in current_captions]
-            current_captions = [x.replace('!', '') for x in current_captions]
-            current_captions = [x.replace('\\', '') for x in current_captions]
-            current_captions = [x.replace('/', '') for x in current_captions]
+                current_captions = current_batch['Description'].values
+                current_captions = ['<bos> ' + x for x in current_captions]
+                current_captions = [x.replace('.', '') for x in current_captions]
+                current_captions = [x.replace(',', '') for x in current_captions]
+                current_captions = [x.replace('"', '') for x in current_captions]
+                current_captions = [x.replace('\n', '') for x in current_captions]
+                current_captions = [x.replace('?', '') for x in current_captions]
+                current_captions = [x.replace('!', '') for x in current_captions]
+                current_captions = [x.replace('\\', '') for x in current_captions]
+                current_captions = [x.replace('/', '') for x in current_captions]
 
-            ## add marks for captions
-            for idx, each_cap in enumerate(current_captions):
-                word_seq = each_cap.lower().split(' ')
-                if len(word_seq) < n_caption_lstm_step:
-                    current_captions[idx] = current_captions[idx] + ' <eos>'
-                else:
-                    new_word = ''
-                    for i in range(n_caption_lstm_step-1):
-                        new_word = new_word + word_seq[i] + ' '
-                    current_captions[idx] = new_word + '<eos>'
-
-            ## turn word to index
-            current_caption_ind = []
-            for cap in current_captions:
-                current_word_ind = []
-                for word in cap.lower().split(' '):
-                    if word in wordtoix:
-                        current_word_ind.append(wordtoix[word])
+                ## add marks for captions
+                for idx, each_cap in enumerate(current_captions):
+                    word_seq = each_cap.lower().split(' ')
+                    if len(word_seq) < n_caption_lstm_step:
+                        current_captions[idx] = current_captions[idx] + ' <eos>'
                     else:
-                        current_word_ind.append(wordtoix['<unk>'])
-                current_caption_ind.append(current_word_ind)
+                        new_word = ''
+                        for i in range(n_caption_lstm_step-1):
+                            new_word = new_word + word_seq[i] + ' '
+                        current_captions[idx] = new_word + '<eos>'
 
-            current_caption_matrix = pad_sequences(current_caption_ind, padding='post', maxlen=n_caption_lstm_step) # b,caplen
-            current_caption_matrix = np.hstack( [current_caption_matrix, np.zeros( [len(current_caption_matrix), 1] ) ] ).astype(int)
-            current_caption_masks = np.zeros_like(current_caption_matrix, dtype=int)#( (current_caption_matrix.shape[0], current_caption_matrix.shape[1]) )
-            nonzeros = np.array( [(x != 0).sum() + 1 for x in current_caption_matrix] )
+                ## turn word to index
+                current_caption_ind = []
+                for cap in current_captions:
+                    current_word_ind = []
+                    for word in cap.lower().split(' '):
+                        if word in wordtoix:
+                            current_word_ind.append(wordtoix[word])
+                        else:
+                            current_word_ind.append(wordtoix['<unk>'])
+                    current_caption_ind.append(current_word_ind)
 
-            for ind, row in enumerate(current_caption_masks): # set mask
-                row[:nonzeros[ind]] = 1
+                current_caption_matrix = pad_sequences(current_caption_ind, padding='post', maxlen=n_caption_lstm_step) # b,caplen
+                current_caption_matrix = np.hstack( [current_caption_matrix, np.zeros( [len(current_caption_matrix), 1] ) ] ).astype(int)
+                current_caption_masks = np.zeros_like(current_caption_matrix, dtype=int)#( (current_caption_matrix.shape[0], current_caption_matrix.shape[1]) )
+                nonzeros = np.array( [(x != 0).sum() + 1 for x in current_caption_matrix] )
 
-            # probs_val = sess.run(tf_probs, feed_dict={
-            #     tf_video:current_feats,
-            #     tf_caption: current_caption_matrix
-            #     })
-            ops = [train_op, tf_loss, tf_predicted]
-            if step % summ_freq == 0:
-                ops.append(summary_op)
-            ret = sess.run(
-                    ops,
-                    feed_dict={
-                        tf_video: current_feats,
-                        tf_video_mask : current_video_masks,
-                        tf_caption: current_caption_matrix,
-                        tf_caption_mask: current_caption_masks
-                        })
-            # loss_to_draw_epoch.append(loss_val)
-            _, loss_val, predicted_captions = ret[:3]
-            xent += loss_val
+                for ind, row in enumerate(current_caption_masks): # set mask
+                    row[:nonzeros[ind]] = 1
 
-
-            print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
-            i = np.random.choice(len(predicted_captions))
-            predicted_sent = word_indices_to_sentence(ixtoword, predicted_captions[i])
-            ground_sent = word_indices_to_sentence(ixtoword, current_caption_matrix[i])
-            bleu = BLEU(predicted_sent, ground_sent)
-            result = 'caption #{}: bleu={}\npredicted="{}", \ngroundtru="{}"\n'.format(i, bleu, predicted_sent, ground_sent)
-            print(result)
-            loss_fd.write('epoch {}, iter {}, loss {}\n {}\n=============================\n'.format(epoch, start, loss_val, result))
-
-            if step % summ_freq == 0:
-                summ_writer.add_summary(ret[3], step)
-                add_custom_summ(tagname='xent',tagvalue=xent / summ_freq,writer=summ_writer,iters=step)
-                xent = 0.
-            step += 1
+                # probs_val = sess.run(tf_probs, feed_dict={
+                #     tf_video:current_feats,
+                #     tf_caption: current_caption_matrix
+                #     })
+                ops = [train_op, tf_loss, tf_predicted]
+                if step % summ_freq == 0:
+                    ops.append(summary_op)
+                ret = sess.run(
+                        ops,
+                        feed_dict={
+                            tf_video: current_feats,
+                            tf_video_mask : current_video_masks,
+                            tf_caption: current_caption_matrix,
+                            tf_caption_mask: current_caption_masks
+                            })
+                # loss_to_draw_epoch.append(loss_val)
+                _, loss_val, predicted_captions = ret[:3]
+                xent += loss_val
 
 
-        # draw loss curve every epoch
-        # loss_to_draw.append(np.mean(loss_to_draw_epoch))
+                print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
+                i = np.random.choice(len(predicted_captions))
+                predicted_sent = word_indices_to_sentence(ixtoword, predicted_captions[i])
+                ground_sent = word_indices_to_sentence(ixtoword, current_caption_matrix[i])
+                bleu = BLEU(predicted_sent, ground_sent)
+                result = 'caption #{}: bleu={}\npredicted="{}", \ngroundtru="{}"\n'.format(i, bleu, predicted_sent, ground_sent)
+                print(result)
+                loss_fd.write('epoch {}, iter {}, loss {}\n {}\n=============================\n'.format(epoch, start, loss_val, result))
 
-        # plt_save_dir = "./loss_imgs"
-        # plt_save_img_name = str(epoch) + '.png'
-        # plt.plot(list(range(len(loss_to_draw))), loss_to_draw, color='g')
-        # plt.grid(True)
-        # plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
+                if step % summ_freq == 0:
+                    summ_writer.add_summary(ret[3], step)
+                    add_custom_summ(tagname='xent',tagvalue=xent / summ_freq,writer=summ_writer,iters=step)
+                    xent = 0.
+                step += 1
 
-        if np.mod(epoch, 10) == 0:
-            print("Epoch ", epoch, " is done. Saving the model ...")
-            saver.save(sess, os.path.join(model_path, 'model'), global_step=epoch)
 
-    loss_fd.close()
+            # draw loss curve every epoch
+            # loss_to_draw.append(np.mean(loss_to_draw_epoch))
+
+            # plt_save_dir = "./loss_imgs"
+            # plt_save_img_name = str(epoch) + '.png'
+            # plt.plot(list(range(len(loss_to_draw))), loss_to_draw, color='g')
+            # plt.grid(True)
+            # plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
+
+            if np.mod(epoch, 10) == 0:
+                print("Epoch ", epoch, " is done. Saving the model ...")
+                saver.save(sess, os.path.join(model_path, 'model'), global_step=epoch)
+
+        loss_fd.close()
 
 def test(model_path='./models/model-910'):
     test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
