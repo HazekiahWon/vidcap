@@ -54,7 +54,7 @@ class Video_Caption_Generator():
             total += cnt
         print('totaling {}'.format(total))
 
-        input()
+        # input()
 
 
     def build_model(self):
@@ -247,7 +247,7 @@ n_caption_lstm_step = 30
 n_frame_step = 80
 
 n_epochs = 1000
-batch_size = 50
+batch_size = 16
 learning_rate = 0.0001
 
 
@@ -403,8 +403,8 @@ def train():
 
             current_feats = np.zeros((batch_size, n_video_lstm_step, dim_image))
             current_feats_vals = [np.load(vid) for vid in current_videos]
-            print('for each in current batch :', [x.shape for x in current_feats_vals])
-            input() # to test weather the following padding is required
+            # print('for each in current batch :', [x.shape for x in current_feats_vals])
+            # input() # to test weather the following padding is required
 
             current_video_masks = np.zeros((batch_size, n_video_lstm_step))
 
