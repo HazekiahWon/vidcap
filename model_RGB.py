@@ -149,15 +149,17 @@ class Video_Caption_Generator():
 
             # we want each frame is focused approx. the same, should summed up across caps
             # n_cap * b,n_frame
-            alphas = tf.stack(alphas, axis=-1) # b,n_frame,n_cap
+            alphas = tf.stack(alphas, axis=2) # b,n_frame,n_cap
             alphas_ = tf.reduce_sum(alphas, axis=-1) # b,n_frame
 
         generated_words = tf.stack(generated_words) # t,b
         generated_words = tf.transpose(generated_words) # b,t
         loss = tf.reduce_mean(tf.stack(loss)) # t,b
-        # summary_op = tf.summary.merge((tf.summary.scalar('xent', loss),
-        #                                tf.summary.histogram('alphas', alphas_)))
-        summary_op = tf.summary.histogram('alphas', alphas_)
+        alphas_loss = tf.reduce_mean(tf.nn.relu(1.-alphas_))
+        loss += 0.1*alphas_loss
+        summary_op = tf.summary.merge((tf.summary.scalar('alphas_loss', alphas_loss),
+                                       tf.summary.histogram('alphas', alphas_)))
+        # summary_op = tf.summary.histogram('alphas', alphas_)
 
         self._params_usage()
 
