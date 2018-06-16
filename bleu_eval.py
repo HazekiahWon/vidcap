@@ -102,11 +102,13 @@ def BLEU(s, t):
         pr, bp = count_ngram(candidate, references, 1)
         precisions.append(pr)
         score = geometric_mean(precisions) * bp
-        print("BLEU SCORE: " + str(score / count))
+        return score / count
+        # print("BLEU SCORE: " + str(score / count))
     except:
         print("Usage: python bleu_eval.py <candidate_sentence> <reference_sentence>")
 
 
 ### Usage: python bleu_eval.py candidate_sentence reference_sentence
 ### Ref : https://github.com/vikasnar/Bleu
-BLEU()
+if __name__=='__main__':
+    print(BLEU(sys.argv[1], sys.argv[2]))
