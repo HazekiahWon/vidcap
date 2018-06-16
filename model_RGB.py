@@ -358,7 +358,7 @@ def train():
             n_words=len(wordtoix),
             dim_hidden=dim_hidden,
             batch_size=batch_size,
-            n_lstm_steps=n_frame_step,
+            # n_lstm_steps=n_frame_step,
             n_video_lstm_step=n_video_lstm_step,
             n_caption_lstm_step=n_caption_lstm_step,
             bias_init_vector=bias_init_vector)
