@@ -250,6 +250,7 @@ n_frame_step = 80
 
 n_epochs = 1000
 batch_size = 16
+summ_freq = batch_size*5
 learning_rate = 0.0001
 
 logdir = r'tensorboard'
@@ -385,10 +386,10 @@ def train():
     #new_saver.restore(sess, tf.train.latest_checkpoint('./models/'))
 
     loss_fd = open('loss.txt', 'w')
-    loss_to_draw = []
+    # loss_to_draw = []
 
     for epoch in range(0, n_epochs):
-        loss_to_draw_epoch = []
+        # loss_to_draw_epoch = []
 
         index = list(train_data.index)
         np.random.shuffle(index)
@@ -462,29 +463,34 @@ def train():
             #     tf_video:current_feats,
             #     tf_caption: current_caption_matrix
             #     })
-
+            ops = [train_op, tf_loss, tf_predicted]
+            if start % summ_freq == 0:
+                ops.append(summary_op)
             _, loss_val, predicted_captions = sess.run(
-                    [train_op, tf_loss, tf_predicted],
+                    ops,
                     feed_dict={
                         tf_video: current_feats,
                         tf_video_mask : current_video_masks,
                         tf_caption: current_caption_matrix,
                         tf_caption_mask: current_caption_masks
                         })
-            loss_to_draw_epoch.append(loss_val)
+            # loss_to_draw_epoch.append(loss_val)
 
             print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
             i = np.random.choice(len(predicted_captions))
             predicted_sent = word_indices_to_sentence(ixtoword, predicted_captions[i])
             ground_sent = word_indices_to_sentence(ixtoword, current_caption_matrix[i])
-            result = 'caption #{}: predicted={}, ground={}'.format(i, predicted_sent, ground_sent)
+            result = 'caption #{}: \npredicted="{}", \ngroundtru="{}"'.format(i, predicted_sent, ground_sent)
             print(result)
             loss_fd.write('epoch {}, iter {}, loss {}\n {}'.format(epoch, start, loss_val, result))
 
+            if start % summ_freq == 0:
+                summ_writer.add_summary(summary_op)
+
 
         # draw loss curve every epoch
-        loss_to_draw.append(np.mean(loss_to_draw_epoch))
-        summ_writer.add_summary(summary_op)
+        # loss_to_draw.append(np.mean(loss_to_draw_epoch))
+
         # plt_save_dir = "./loss_imgs"
         # plt_save_img_name = str(epoch) + '.png'
         # plt.plot(list(range(len(loss_to_draw))), loss_to_draw, color='g')
