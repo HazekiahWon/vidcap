@@ -30,6 +30,7 @@ model_path = os.path.join('models', time_id)
 logdir = os.path.join('tensorboard', time_id)
 
 prompts = []
+train_test_ratio = 0.9
 #=======================================================================================
 # Train Parameters
 #=======================================================================================
@@ -56,15 +57,15 @@ class Video_Caption_Generator():
         self.dim_hidden = dim_hidden
         # self.batch_size = batch_size
 
-        self.n_video_lstm_step=n_video_lstm_step
+        self.n_frames=n_video_lstm_step
         self.n_caption_lstm_step=n_caption_lstm_step
 
         with tf.device("/cpu:0"):
             self.Wemb = tf.Variable(tf.random_uniform([n_words, dim_hidden], -0.1, 0.1), name='Wemb')
         #self.bemb = tf.Variable(tf.zeros([dim_hidden]), name='bemb')
 
-        self.lstm1 = tf.contrib.rnn.BasicLSTMCell(dim_hidden, state_is_tuple=True)
-        self.lstm2 = tf.contrib.rnn.BasicLSTMCell(dim_hidden, state_is_tuple=True)
+        self.lstm1 = tf.nn.rnn_cell.BasicLSTMCell(dim_hidden, state_is_tuple=True)
+        self.lstm2 = tf.nn.rnn_cell.BasicLSTMCell(dim_hidden, state_is_tuple=True)
 
         self.encode_image_W = tf.Variable( tf.random_uniform([dim_image, dim_hidden], -0.1, 0.1), name='encode_image_W')
         self.encode_image_b = tf.Variable( tf.zeros([dim_hidden]), name='encode_image_b')
@@ -85,17 +86,17 @@ class Video_Caption_Generator():
             cnt = 1
             for dim in shape:
                 cnt *= dim.value
-            print('{} with shape {} has {}'.format(v.name, shape, cnt))
+            prompts.append('{} with shape {} has {}'.format(v.name, shape, cnt))
             total += cnt
-        print('totaling {}'.format(total))
+        prompts.append('totaling {}'.format(total))
 
         # input()
 
 
     def build_model(self):
 
-        video = tf.placeholder(tf.float32, [None, self.n_video_lstm_step, self.dim_image])
-        video_mask = tf.placeholder(tf.float32, [None, self.n_video_lstm_step])
+        video = tf.placeholder(tf.float32, [None, self.n_frames, self.dim_image])
+        video_mask = tf.placeholder(tf.float32, [None, self.n_frames])
 
         caption = tf.placeholder(tf.int32, [None, self.n_caption_lstm_step+1])
         caption_mask = tf.placeholder(tf.float32, [None, self.n_caption_lstm_step+1])
@@ -103,37 +104,52 @@ class Video_Caption_Generator():
         self.batch_size = tf.shape(video)[0]
         # self.decoder_W = tf.Variable(tf.random_uniform([self.batch_size, dim_hidden], -0.1, 0.1), name='decoder_W')
 
-        video_flat = tf.reshape(video, [-1, self.dim_image])
-        image_emb = tf.nn.xw_plus_b( video_flat, self.encode_image_W, self.encode_image_b ) # (batch_size*n_lstm_steps, dim_hidden)
-        image_emb = tf.reshape(image_emb, [self.batch_size, self.n_video_lstm_step, self.dim_hidden])
+        ##===================================================
+        # shallow feature representation
+        # vgg_feature (dim_image) -> embeddings (dim_hidden)
+        ##===================================================
+        video_flat = tf.reshape(video, [-1, self.dim_image]) # b*n_frame, dim_img
+        image_emb = tf.nn.xw_plus_b( video_flat, self.encode_image_W, self.encode_image_b ) # b*n_frame,dim_hidden
+        image_emb = tf.reshape(image_emb, [self.batch_size, self.n_frames, self.dim_hidden]) #
 
         # state1 = tf.zeros([self.batch_size, self.lstm1.state_size])
         # state2 = tf.zeros([self.batch_size, self.lstm2.state_size])
         state1 = self.lstm1.zero_state(self.batch_size, dtype=tf.float32)
         state2 = self.lstm2.zero_state(self.batch_size, dtype=tf.float32)
 
-        padding_lstm1 = tf.zeros([self.batch_size, self.dim_hidden])
-        padding_lstm2 = tf.zeros([self.batch_size, 2*self.dim_hidden])
+        padding_lstm1 = tf.zeros([self.batch_size, self.dim_hidden]) # to replace inputs during decoding
+        padding_lstm2 = tf.zeros([self.batch_size, 2*self.dim_hidden]) # attention+word_embd
 
         probs = []
         loss = []
-
+        hidden1 = []
         ##############################  Encoding Stage ##################################
         with tf.variable_scope(tf.get_variable_scope()) as scope:
-            for i in range(0, self.n_video_lstm_step):
+            for i in range(0, self.n_frames):
                 if i > 0:
                     tf.get_variable_scope().reuse_variables()
 
-
+                ##====================================================
+                # LSTM1
+                # for each time i
+                # input : embeddings (dim_hidden), state1 (dim_hidden)
+                # output : out1 (dim_hidden), state1 (dim_hidden)
+                ##====================================================
                 with tf.variable_scope("LSTM1"):
                     output1, state1 = self.lstm1(image_emb[:,i,:], state1)
 
                 # collecting all hidden states from LSTM1
-                if i == 0:
-                    hidden1 = tf.expand_dims(output1, axis=1) # hidden1: b * n * h
-                else:
-                    hidden1 = tf.concat([hidden1, tf.expand_dims(output1, axis=1)], axis=1)
-
+                # if i == 0:
+                #     hidden1 = tf.expand_dims(output1, axis=1) # hidden1: b * n * h
+                # else:
+                #     hidden1 = tf.concat([hidden1, tf.expand_dims(output1, axis=1)], axis=1)
+                hidden1.append(output1) # n,b,h
+                ##====================================================
+                # LSTM2
+                # for each time i
+                # input : [atn,word_embd,out1] (2+1*dim_hidden), state2 (dim_hidden)
+                # output : out1 (dim_hidden), state1 (dim_hidden)
+                ##====================================================
                 with tf.variable_scope("LSTM2"):
                     output2, state2 = self.lstm2(tf.concat(axis=1, values=[padding_lstm2, output1]), state2)
 
@@ -149,18 +165,32 @@ class Video_Caption_Generator():
                 with tf.variable_scope("LSTM1"):
                     output1, state1 = self.lstm1(padding_lstm1, state1)
 
+                ##=======================
+                # luong attention
+                # hidden1 : n,b,h -> b,n,h
+                # output2 : b,h -> b,1,h
+                # W : h,h
+                ##=======================
                 #calculating the context vector
-                hidden1 = tf.reshape(hidden1, [-1, self.dim_hidden]) # (b*n) * h
-                hidden2 = tf.reshape(output2, [-1, 1]) # (b*h) * 1
-                W_bilinear = tf.tile(self.att_W, tf.stack([1, batch_size])) # h * (b*h)
-                alpha = tf.matmul(hidden1, W_bilinear)
-                alpha = tf.matmul(alpha, hidden2) # (b*n) * 1
-                alpha = tf.reshape(alpha, [self.batch_size, -1]) # b * n
-                alpha = tf.nn.softmax(alpha) # b * n
-                alpha = tf.reshape(alpha, [-1,1]) # (b*n) * 1
-                context = alpha * hidden1 # (b*n) * h
-                context = tf.reshape(context, [self.batch_size, -1, self.dim_hidden]) # b * n * h
-                context = tf.reduce_sum(context, axis=1) # b * h
+                hidden1 = tf.stack(hidden1, axis=1) # b,n,h
+                keys = tf.layers.Dense(hidden1, self.dim_hidden)
+                query = tf.expand_dims(output2, axis=1)
+                alpha = tf.matmul(query, keys, transpose_b=True)
+                alpha = tf.squeeze(alpha) # b,n
+                alpha = tf.nn.softmax(alpha, axis=-1)
+                contexts = tf.multiply(tf.expand_dims(alpha, axis=-1), hidden1) # b,n,h
+                context = tf.reduce_sum(contexts, axis=1) # b,h
+                # hidden1 = tf.reshape(hidden1, [-1, self.dim_hidden]) # (b*n) * h
+                # hidden2 = tf.reshape(output2, [-1, 1]) # (b*h) * 1
+                # W_bilinear = tf.tile(self.att_W, tf.stack([1, batch_size])) # h * (b*h)
+                # alpha = tf.matmul(hidden1, W_bilinear)
+                # alpha = tf.matmul(alpha, hidden2) # (b*n) * 1
+                # alpha = tf.reshape(alpha, [self.batch_size, -1]) # b * n
+                # alpha = tf.nn.softmax(alpha) # b * n
+                # alpha = tf.reshape(alpha, [-1,1]) # (b*n) * 1
+                # context = alpha * hidden1 # (b*n) * h
+                # context = tf.reshape(context, [self.batch_size, -1, self.dim_hidden]) # b * n * h
+                # context = tf.reduce_sum(context, axis=1) # b * h
 
                 alphas.append(tf.reshape(alpha, (self.batch_size,-1))) # b,n_frame
 
@@ -193,10 +223,11 @@ class Video_Caption_Generator():
         generated_words = tf.stack(generated_words) # t,b
         generated_words = tf.transpose(generated_words) # b,t
         loss = tf.reduce_mean(tf.stack(loss)) # t,b
-        alphas_loss = tf.reduce_mean(tf.nn.relu(alpha_baseline-alphas_))
-        loss += alph_loss_weight*alphas_loss
-        summary_op = tf.summary.merge((tf.summary.scalar('alphas_loss', alphas_loss),
-                                       tf.summary.histogram('alphas', alphas_)))
+        # alphas_loss = tf.reduce_mean(tf.nn.relu(alpha_baseline-alphas_))
+        # loss += alph_loss_weight*alphas_loss
+        summary_op = tf.summary.merge((tf.summary.histogram('alphas', alphas_),
+                                       # tf.summary.scalar('alphas_loss', alphas_loss),
+                                       ))
         # summary_op = tf.summary.histogram('alphas', alphas_)
 
         self._params_usage()
@@ -205,12 +236,12 @@ class Video_Caption_Generator():
 
 
     def build_generator(self):
-        video = tf.placeholder(tf.float32, [1, self.n_video_lstm_step, self.dim_image])
-        video_mask = tf.placeholder(tf.float32, [1, self.n_video_lstm_step])
+        video = tf.placeholder(tf.float32, [1, self.n_frames, self.dim_image])
+        video_mask = tf.placeholder(tf.float32, [1, self.n_frames])
 
         video_flat = tf.reshape(video, [-1, self.dim_image])
         image_emb = tf.nn.xw_plus_b(video_flat, self.encode_image_W, self.encode_image_b)
-        image_emb = tf.reshape(image_emb, [1, self.n_video_lstm_step, self.dim_hidden])
+        image_emb = tf.reshape(image_emb, [1, self.n_frames, self.dim_hidden])
 
         state1 = tf.zeros([1, self.lstm1.state_size])
         state2 = tf.zeros([1, self.lstm2.state_size])
@@ -220,22 +251,24 @@ class Video_Caption_Generator():
 
         probs = []
         embeds = []
-
+        hidden1 = []
         with tf.variable_scope(tf.get_variable_scope()) as scope:
-            for i in range(0, self.n_video_lstm_step):
+            for i in range(0, self.n_frames):
                 if i > 0:
                     tf.get_variable_scope().reuse_variables()
 
                 with tf.variable_scope("LSTM1"):
                     output1, state1 = self.lstm1(image_emb[:, i, :], state1)
 
-                if i==0:
-                    hidden1 = output1 # 1*h
-                else:
-                    hidden1 = tf.concat([hidden1,output1], axis=0) # n*h
+                # if i==0:
+                #     hidden1 = output1 # 1*h
+                # else:
+                #     hidden1 = tf.concat([hidden1,output1], axis=0) # n*h
+                hidden1.append(output1)
 
                 with tf.variable_scope("LSTM2"):
                     output2, state2 = self.lstm2(tf.concat(axis=1, values=[padding_lstm2, output1]), state2)
+            hidden1 = tf.reshape(tf.stack(hidden1), [-1, dim_hidden])
 
         with tf.variable_scope(tf.get_variable_scope()) as scope:
             for i in range(0, self.n_caption_lstm_step):
@@ -278,12 +311,7 @@ class Video_Caption_Generator():
         return video, video_mask, generated_words, probs, embeds
 
 
-
-
-
-
-
-def get_video_train_data(video_data_path, video_feat_path):
+def get_video_data(video_data_path, video_feat_path, train=True):
     video_data = pd.read_csv(video_data_path, sep=',')
     video_data = video_data[video_data['Language'] == 'English']
     #apply function to each row (axis=1)
@@ -293,20 +321,21 @@ def get_video_train_data(video_data_path, video_feat_path):
     video_data = video_data[video_data['Description'].map(lambda x: isinstance(x, str))]
 
     unique_filenames = sorted(video_data['video_path'].unique())
-    train_data = video_data[video_data['video_path'].map(lambda x: x in unique_filenames)]
-    return train_data
+    data = video_data[video_data['video_path'].map(lambda x: x in unique_filenames)]
+
+    ind = int(len(data)*train_test_ratio)
+    if train:
+        prompts.append('with ratio {}, {} items used for training, the remaining {} for testing'.format(train_test_ratio,
+                                                                                                        ind, len(data)-ind))
+        return data[:ind]
+    else:
+        return data[ind:]
+
+def get_video_train_data(video_data_path, video_feat_path):
+    return get_video_data(video_data_path, video_feat_path, train=True)
 
 def get_video_test_data(video_data_path, video_feat_path):
-    video_data = pd.read_csv(video_data_path, sep=',')
-    video_data = video_data[video_data['Language'] == 'English']
-    video_data['video_path'] = video_data.apply(lambda row: row['VideoID']+'_'+str(int(row['Start']))+'_'+str(int(row['End']))+'.avi.npy', axis=1)
-    video_data['video_path'] = video_data['video_path'].map(lambda x: os.path.join(video_feat_path, x))
-    video_data = video_data[video_data['video_path'].map(lambda x: os.path.exists( x ))]
-    video_data = video_data[video_data['Description'].map(lambda x: isinstance(x, str))]
-
-    unique_filenames = sorted(video_data['video_path'].unique())
-    test_data = video_data[video_data['video_path'].map(lambda x: x in unique_filenames)]
-    return test_data
+    return get_video_data(video_data_path, video_feat_path, train=False)
 
 def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
     # borrowed this function from NeuralTalk
@@ -398,7 +427,7 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
         np.save('./data/ixtoword', ixtoword)
         np.save("./data/bias_init_vector", bias_init_vector)
     else :
-        ixtoword = np.load('./data/ixtoword.npy')
+        ixtoword = pd.Series(np.load('./data/ixtoword.npy').tolist())
         wordtoix = {v:k for k,v in ixtoword.items()}
         bias_init_vector = np.load('./data/bias_init_vector.npy')
 
@@ -482,6 +511,8 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
             current_train_data = train_data.groupby('video_path').apply(lambda x: x.iloc[np.random.choice(len(x))]) # sample one discrp.
             current_train_data = current_train_data.reset_index(drop=True)
 
+            total_bleu = 0.
+            epoch_start = step
             for start, end in zip(
                     list(range(0, len(current_train_data), batch_size)),
                     list(range(batch_size, len(current_train_data), batch_size))):
@@ -563,18 +594,17 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
                 _, loss_val, predicted_captions = ret[:3]
                 xent += loss_val
 
-
                 i = np.random.choice(len(predicted_captions))
-                predicted_sent = word_indices_to_sentence(ixtoword, predicted_captions[i])
-                ground_sent = word_indices_to_sentence(ixtoword, current_caption_matrix[i])
-                bleu = BLEU(predicted_sent, ground_sent)
-                result = 'caption #{}: bleu={}\npredicted="{}", \ngroundtru="{}"\n'.format(i, bleu, predicted_sent, ground_sent)
+                predicted_sents = [word_indices_to_sentence(ixtoword, cap) for cap in predicted_captions]
+                ground_sents = [word_indices_to_sentence(ixtoword, gnd) for gnd in current_caption_matrix]
+                bleus = [BLEU(predicted_sent, ground_sent) for predicted_sent,ground_sent in zip(predicted_sents,ground_sents)]
+                total_bleu += np.mean(bleus)
 
                 prompts += [
                     'epoch {}, iter {}, loss {}, elapsed {}'.format(epoch, start, loss_val, time.time() - start_time),
-                    'caption #{}: bleu={}'.format(i, bleu),
-                    'predicted="{}",'.format(predicted_sent),
-                    'groundtru="{}"'.format(ground_sent),
+                    'caption #{}: bleu={}'.format(current_videos[i], bleus[i]),
+                    'predicted="{}",'.format(predicted_sents[i]),
+                    'groundtru="{}"'.format(ground_sents[i]),
                     '=============================']
 
                 if step % summ_freq == 0:
@@ -587,22 +617,17 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
                     xent = 0.
                 step += 1
 
+            avg_bleu = total_bleu / (step-epoch_start)
 
-            # draw loss curve every epoch
-            # loss_to_draw.append(np.mean(loss_to_draw_epoch))
-
-            # plt_save_dir = "./loss_imgs"
-            # plt_save_img_name = str(epoch) + '.png'
-            # plt.plot(list(range(len(loss_to_draw))), loss_to_draw, color='g')
-            # plt.grid(True)
-            # plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
+            prompts.append(
+                "\nEpoch {} with learning rate {} is done. Avg BLEU is {}".format(epoch, sess.run(learning_rate), avg_bleu))
+            add_custom_summ(tagname='bleu', tagvalue=avg_bleu, writer=summ_writer, iters=epoch)
 
             if np.mod(epoch, save_freq) == 0:
                 save_name = os.path.join(model_path,
                                         'loss_{}_{}'.format(
                                             str(tmp).replace('.','@'),
                                             time.strftime('%H%M%S', time.localtime())))
-                prompts.append("\nEpoch {} with learning rate {} is done. Saving as {}".format(epoch, sess.run(learning_rate), save_name))
                 saver.save(sess, save_name, global_step=epoch)
 
             loss_fd.write('\n'.join(prompts))
