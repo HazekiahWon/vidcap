@@ -77,6 +77,7 @@ class Video_Caption_Generator():
             self.embed_word_b = tf.Variable(tf.zeros([n_words]), name='embed_word_b')
 
         self.att_W = tf.Variable( tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='att_W')
+        self.att_b = tf.Variable( tf.zeros([dim_hidden]), name='att_b')
 
 
     def _params_usage(self):
@@ -172,8 +173,9 @@ class Video_Caption_Generator():
                 # W : h,h
                 ##=======================
                 #calculating the context vector
-                hidden1 = tf.stack(hidden1, axis=1) # b,n,h
-                keys = tf.layers.Dense(hidden1, self.dim_hidden)
+                hidden1 = tf.reshape(tf.stack(hidden1, axis=1), [-1, self.dim_hidden]) # b,n,h
+                keys = tf.nn.xw_plus_b(hidden1, self.att_W, self.att_b)#tf.layers.dense(hidden1, self.dim_hidden)
+                keys = tf.reshape(keys, [self.batch_size, -1, self.dim_hidden])
                 query = tf.expand_dims(output2, axis=1)
                 alpha = tf.matmul(query, keys, transpose_b=True)
                 alpha = tf.squeeze(alpha) # b,n
