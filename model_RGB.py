@@ -9,8 +9,8 @@ import tensorflow as tf
 from utils import pad_sequences
 from bleu_eval import BLEU
 
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+# matplotlib.use('Agg')
+# import matplotlib.pyplot as plt
 
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
@@ -251,8 +251,11 @@ video_test_feat_path = './features'
 video_train_data_path = './data/video_corpus.csv'
 video_test_data_path = './data/video_corpus.csv'
 
-model_path = './models'
+time_id = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+model_path = os.path.join('models', time_id)
+logdir = os.path.join('tensorboard', time_id)
 
+prompts = []
 #=======================================================================================
 # Train Parameters
 #=======================================================================================
@@ -263,13 +266,13 @@ n_video_lstm_step = 80
 n_caption_lstm_step = 30
 n_frame_step = 80
 
-n_epochs = 1000
+n_epochs = 150
 batch_size = 16
 # factor = 31
 summ_freq = 25
 learning_rate = 0.0001
 
-logdir = r'tensorboard'
+
 
 
 def get_video_train_data(video_data_path, video_feat_path):
@@ -299,7 +302,7 @@ def get_video_test_data(video_data_path, video_feat_path):
 
 def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
     # borrowed this function from NeuralTalk
-    print('preprocessing word counts and creating vocab based on word count threshold %d' % (word_count_threshold))
+    prompts.append('preprocessing word counts and creating vocab based on word count threshold %d' % (word_count_threshold))
     word_counts = {}
     nsents = 0
     for sent in sentence_iterator:
@@ -308,7 +311,7 @@ def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
         for w in sent.lower().split(' '):
            word_counts[w] = word_counts.get(w, 0) + 1
     vocab = [w for w in word_counts if word_counts[w] >= word_count_threshold]
-    print('filtered words from %d to %d' % (len(word_counts), len(vocab)))
+    prompts.append('filtered words from %d to %d' % (len(word_counts), len(vocab)))
 
     ixtoword = {}
     ixtoword[0] = '<pad>'
@@ -360,6 +363,7 @@ def add_custom_summ(tagname, tagvalue, writer, iters):
     writer.add_summary(psnr_summ, iters)
 
 def train():
+    global prompts
     ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
     train_captions = train_data['Description'].values
@@ -385,24 +389,33 @@ def train():
     np.save('./data/ixtoword', ixtoword)
     np.save("./data/bias_init_vector", bias_init_vector)
 
-    ## model & ops
-    model = Video_Caption_Generator(
-            dim_image=dim_image,
-            n_words=len(wordtoix),
-            dim_hidden=dim_hidden,
-            batch_size=batch_size,
-            # n_lstm_steps=n_frame_step,
-            n_video_lstm_step=n_video_lstm_step,
-            n_caption_lstm_step=n_caption_lstm_step,
-            bias_init_vector=bias_init_vector)
 
     graph = tf.Graph()
     with graph.as_default():
+        ## model & ops
+        model = Video_Caption_Generator(
+                dim_image=dim_image,
+                n_words=len(wordtoix),
+                dim_hidden=dim_hidden,
+                batch_size=batch_size,
+                # n_lstm_steps=n_frame_step,
+                n_video_lstm_step=n_video_lstm_step,
+                n_caption_lstm_step=n_caption_lstm_step,
+                bias_init_vector=bias_init_vector)
+
         tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model.build_model()
         sess = tf.InteractiveSession()
 
         # train op, init
         saver = tf.train.Saver(max_to_keep=10)
+        if not os.path.exists(model_path):
+            os.mkdir(model_path)
+
+        if not os.path.exists(logdir):
+            os.mkdir(logdir)
+
+        prompts.append('ckpt stored in {}, summaries in {}'.format(model_path, logdir))
+
         train_op = tf.train.AdamOptimizer(learning_rate).minimize(tf_loss)
         summ_writer = tf.summary.FileWriter(logdir, graph=tf.get_default_graph())
         tf.global_variables_initializer().run()
@@ -412,6 +425,9 @@ def train():
         #new_saver.restore(sess, tf.train.latest_checkpoint('./models/'))
 
         loss_fd = open('loss.txt', 'w')
+        loss_fd.write('\n'.join(prompts))
+        [print(x) for x in prompts]
+        prompts.clear()
         # loss_to_draw = []
 
         xent = 0.
@@ -508,18 +524,26 @@ def train():
                 xent += loss_val
 
 
-                print('idx: ', start, " Epoch: ", epoch, " loss: ", loss_val, ' Elapsed time: ', str((time.time() - start_time)))
                 i = np.random.choice(len(predicted_captions))
                 predicted_sent = word_indices_to_sentence(ixtoword, predicted_captions[i])
                 ground_sent = word_indices_to_sentence(ixtoword, current_caption_matrix[i])
                 bleu = BLEU(predicted_sent, ground_sent)
                 result = 'caption #{}: bleu={}\npredicted="{}", \ngroundtru="{}"\n'.format(i, bleu, predicted_sent, ground_sent)
-                print(result)
-                loss_fd.write('epoch {}, iter {}, loss {}\n {}\n=============================\n'.format(epoch, start, loss_val, result))
+
+                prompts += [
+                    'epoch {}, iter {}, loss {}, elapsed {}'.format(epoch, start, loss_val, time.time() - start_time),
+                    'caption #{}: bleu={}'.format(i, bleu),
+                    'predicted="{}",'.format(predicted_sent),
+                    'groundtru="{}"'.format(ground_sent),
+                    '=============================']
 
                 if step % summ_freq == 0:
                     summ_writer.add_summary(ret[3], step)
-                    add_custom_summ(tagname='xent',tagvalue=xent / summ_freq,writer=summ_writer,iters=step)
+                    tmp = xent / summ_freq
+                    add_custom_summ(tagname='xent',tagvalue=tmp,writer=summ_writer,iters=step)
+                    prompts += ['*****************************',
+                                'in this {} steps, avg xent is {}'.format(summ_freq, tmp),
+                                '*****************************']
                     xent = 0.
                 step += 1
 
@@ -534,8 +558,16 @@ def train():
             # plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
 
             if np.mod(epoch, 10) == 0:
-                print("Epoch ", epoch, " is done. Saving the model ...")
-                saver.save(sess, os.path.join(model_path, 'model'), global_step=epoch)
+                save_name = os.path.join(model_path,
+                                        'loss_{}_{}'.format(
+                                            str(tmp).replace('.','@'),
+                                            time.strftime('%H%M%S', time.localtime())))
+                prompts.append("Epoch {} is done. Saving as {}".format(epoch, save_name))
+                saver.save(sess, save_name, global_step=epoch)
+
+            loss_fd.write('\n'.join(prompts))
+            [print(x) for x in prompts]
+            prompts.clear() # clear every epoch
 
         loss_fd.close()
 
