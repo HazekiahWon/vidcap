@@ -156,8 +156,8 @@ class Video_Caption_Generator():
         generated_words = tf.stack(generated_words) # t,b
         generated_words = tf.transpose(generated_words) # b,t
         loss = tf.reduce_mean(tf.stack(loss)) # t,b
-        alphas_loss = tf.reduce_mean(tf.nn.relu(1.-alphas_))
-        loss += 0.1*alphas_loss
+        alphas_loss = tf.reduce_mean(tf.nn.relu(alpha_baseline-alphas_))
+        loss += alph_loss_weight*alphas_loss
         summary_op = tf.summary.merge((tf.summary.scalar('alphas_loss', alphas_loss),
                                        tf.summary.histogram('alphas', alphas_)))
         # summary_op = tf.summary.histogram('alphas', alphas_)
@@ -266,11 +266,14 @@ n_video_lstm_step = 80
 n_caption_lstm_step = 30
 n_frame_step = 80
 
-n_epochs = 150
+n_epochs = 300
 batch_size = 16
 # factor = 31
 summ_freq = 25
+save_freq = 5
 learning_rate = 0.0001
+alpha_baseline = 0.3*n_caption_lstm_step / float(n_video_lstm_step)
+alph_loss_weight = 0.5
 
 
 
@@ -362,7 +365,7 @@ def add_custom_summ(tagname, tagvalue, writer, iters):
 
     writer.add_summary(psnr_summ, iters)
 
-def train():
+def train(restore_path=os.path.join('models', '20180617_153210')):
     global prompts
     ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
@@ -408,6 +411,14 @@ def train():
 
         # train op, init
         saver = tf.train.Saver(max_to_keep=10)
+        if restore_path is not None and not os.path.exists(restore_path):
+            print('restore_model path wrong')
+            exit(1)
+        if restore_path is not None:
+            latest_ckpt = tf.train.latest_checkpoint(restore_path)
+            saver.restore(sess, latest_ckpt)
+            prompts.append('restore model from {}'.format(latest_ckpt))
+
         if not os.path.exists(model_path):
             os.mkdir(model_path)
 
@@ -431,7 +442,7 @@ def train():
         # loss_to_draw = []
 
         xent = 0.
-        step = 0
+        step = 1
         for epoch in range(0, n_epochs):
             # loss_to_draw_epoch = []
 
@@ -557,7 +568,7 @@ def train():
             # plt.grid(True)
             # plt.savefig(os.path.join(plt_save_dir, plt_save_img_name))
 
-            if np.mod(epoch, 10) == 0:
+            if np.mod(epoch, save_freq) == 0:
                 save_name = os.path.join(model_path,
                                         'loss_{}_{}'.format(
                                             str(tmp).replace('.','@'),
