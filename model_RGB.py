@@ -15,12 +15,46 @@ from bleu_eval import BLEU
 os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
 os.environ["CUDA_VISIBLE_DEVICES"]="0"
 
+#=====================================================================================
+# Global Parameters
+#=====================================================================================
+
+video_train_feat_path = './features'
+video_test_feat_path = './features'
+
+video_train_data_path = './data/video_corpus.csv'
+video_test_data_path = './data/video_corpus.csv'
+
+time_id = time.strftime('%Y%m%d_%H%M%S', time.localtime())
+model_path = os.path.join('models', time_id)
+logdir = os.path.join('tensorboard', time_id)
+
+prompts = []
+#=======================================================================================
+# Train Parameters
+#=======================================================================================
+dim_image = 4096
+dim_hidden= 512
+
+n_video_lstm_step = 80
+n_caption_lstm_step = 30
+n_frame_step = 80
+
+n_epochs = 1000
+batch_size = 32
+# factor = 31
+summ_freq = 25
+save_freq = 5
+learning_rate = 0.0001
+alpha_baseline = 0.3*n_caption_lstm_step / float(n_video_lstm_step)
+alph_loss_weight = 0.5
+
 class Video_Caption_Generator():
     def __init__(self, dim_image, n_words, dim_hidden, batch_size, n_video_lstm_step, n_caption_lstm_step, bias_init_vector=None):
         self.dim_image = dim_image
         self.n_words = n_words
         self.dim_hidden = dim_hidden
-        self.batch_size = batch_size
+        # self.batch_size = batch_size
 
         self.n_video_lstm_step=n_video_lstm_step
         self.n_caption_lstm_step=n_caption_lstm_step
@@ -42,7 +76,7 @@ class Video_Caption_Generator():
             self.embed_word_b = tf.Variable(tf.zeros([n_words]), name='embed_word_b')
 
         self.att_W = tf.Variable( tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='att_W')
-        self.decoder_W = tf.Variable( tf.random_uniform([self.batch_size, dim_hidden], -0.1, 0.1), name='decoder_W')
+
 
     def _params_usage(self):
         total = 0
@@ -60,11 +94,14 @@ class Video_Caption_Generator():
 
     def build_model(self):
 
-        video = tf.placeholder(tf.float32, [self.batch_size, self.n_video_lstm_step, self.dim_image])
-        video_mask = tf.placeholder(tf.float32, [self.batch_size, self.n_video_lstm_step])
+        video = tf.placeholder(tf.float32, [None, self.n_video_lstm_step, self.dim_image])
+        video_mask = tf.placeholder(tf.float32, [None, self.n_video_lstm_step])
 
-        caption = tf.placeholder(tf.int32, [self.batch_size, self.n_caption_lstm_step+1])
-        caption_mask = tf.placeholder(tf.float32, [self.batch_size, self.n_caption_lstm_step+1])
+        caption = tf.placeholder(tf.int32, [None, self.n_caption_lstm_step+1])
+        caption_mask = tf.placeholder(tf.float32, [None, self.n_caption_lstm_step+1])
+
+        self.batch_size = tf.shape(video)[0]
+        # self.decoder_W = tf.Variable(tf.random_uniform([self.batch_size, dim_hidden], -0.1, 0.1), name='decoder_W')
 
         video_flat = tf.reshape(video, [-1, self.dim_image])
         image_emb = tf.nn.xw_plus_b( video_flat, self.encode_image_W, self.encode_image_b ) # (batch_size*n_lstm_steps, dim_hidden)
@@ -241,39 +278,7 @@ class Video_Caption_Generator():
         return video, video_mask, generated_words, probs, embeds
 
 
-#=====================================================================================
-# Global Parameters
-#=====================================================================================
 
-video_train_feat_path = './features'
-video_test_feat_path = './features'
-
-video_train_data_path = './data/video_corpus.csv'
-video_test_data_path = './data/video_corpus.csv'
-
-time_id = time.strftime('%Y%m%d_%H%M%S', time.localtime())
-model_path = os.path.join('models', time_id)
-logdir = os.path.join('tensorboard', time_id)
-
-prompts = []
-#=======================================================================================
-# Train Parameters
-#=======================================================================================
-dim_image = 4096
-dim_hidden= 512
-
-n_video_lstm_step = 80
-n_caption_lstm_step = 30
-n_frame_step = 80
-
-n_epochs = 300
-batch_size = 16
-# factor = 31
-summ_freq = 25
-save_freq = 5
-learning_rate = 0.0001
-alpha_baseline = 0.3*n_caption_lstm_step / float(n_video_lstm_step)
-alph_loss_weight = 0.5
 
 
 
@@ -365,8 +370,8 @@ def add_custom_summ(tagname, tagvalue, writer, iters):
 
     writer.add_summary(psnr_summ, iters)
 
-def train(restore_path=os.path.join('models', '20180617_153210')):
-    global prompts
+def train(restore_path=os.path.join('models', '20180617_210234')):
+    global prompts,learning_rate
     ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
     train_captions = train_data['Description'].values
@@ -407,18 +412,9 @@ def train(restore_path=os.path.join('models', '20180617_153210')):
                 bias_init_vector=bias_init_vector)
 
         tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model.build_model()
-        sess = tf.InteractiveSession()
+        sess = tf.Session(graph=graph)
 
         # train op, init
-        saver = tf.train.Saver(max_to_keep=10)
-        if restore_path is not None and not os.path.exists(restore_path):
-            print('restore_model path wrong')
-            exit(1)
-        if restore_path is not None:
-            latest_ckpt = tf.train.latest_checkpoint(restore_path)
-            saver.restore(sess, latest_ckpt)
-            prompts.append('restore model from {}'.format(latest_ckpt))
-
         if not os.path.exists(model_path):
             os.mkdir(model_path)
 
@@ -427,22 +423,50 @@ def train(restore_path=os.path.join('models', '20180617_153210')):
 
         prompts.append('ckpt stored in {}, summaries in {}'.format(model_path, logdir))
 
+        step = 1
+        learning_rate = tf.train.exponential_decay(learning_rate, step, 5000, 0.9)
         train_op = tf.train.AdamOptimizer(learning_rate).minimize(tf_loss)
         summ_writer = tf.summary.FileWriter(logdir, graph=tf.get_default_graph())
-        tf.global_variables_initializer().run()
+
+        sess.run(tf.global_variables_initializer())
+        # fd = open('tmp1.txt', 'w')
+        # for v in tf.trainable_variables():
+        #     fd.write(v.name)
+        #     fd.write('\n')
+        #     fd.write(str(sess.run(graph.get_tensor_by_name(v.name))))
+        #     fd.write('\n')
+        # fd.close()
+
+        saver = tf.train.Saver(max_to_keep=10, var_list=tf.trainable_variables())
+        if restore_path is not None and not os.path.exists(restore_path):
+            print('restore_model path wrong')
+            exit(1)
+        if restore_path is not None:
+            latest_ckpt = tf.train.latest_checkpoint(restore_path)
+            saver.restore(sess, latest_ckpt)
+            prompts.append('restore model from {}'.format(latest_ckpt))
+
+        # fd = open('tmp2.txt', 'w')
+        # for v in tf.trainable_variables():
+        #     fd.write(v.name)
+        #     fd.write('\n')
+        #     fd.write(str(sess.run(graph.get_tensor_by_name(v.name))))
+        #     fd.write('\n')
+        # fd.close()
+        # input('plz check it')
 
         #new_saver = tf.train.Saver()
         #new_saver = tf.train.import_meta_graph('./rgb_models/model-1000.meta')
         #new_saver.restore(sess, tf.train.latest_checkpoint('./models/'))
 
-        loss_fd = open('loss.txt', 'w')
+        loss_fd = open('loss_{}.txt'.format(time_id), 'w')
         loss_fd.write('\n'.join(prompts))
         [print(x) for x in prompts]
         prompts.clear()
         # loss_to_draw = []
 
         xent = 0.
-        step = 1
+
         for epoch in range(0, n_epochs):
             # loss_to_draw_epoch = []
 
@@ -573,10 +597,11 @@ def train(restore_path=os.path.join('models', '20180617_153210')):
                                         'loss_{}_{}'.format(
                                             str(tmp).replace('.','@'),
                                             time.strftime('%H%M%S', time.localtime())))
-                prompts.append("Epoch {} is done. Saving as {}".format(epoch, save_name))
+                prompts.append("\nEpoch {} with learning rate {} is done. Saving as {}".format(epoch, sess.run(learning_rate), save_name))
                 saver.save(sess, save_name, global_step=epoch)
 
             loss_fd.write('\n'.join(prompts))
+            loss_fd.write('\n')
             [print(x) for x in prompts]
             prompts.clear() # clear every epoch
 
