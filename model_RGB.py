@@ -391,11 +391,16 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
     captions = [x.replace('/', '') for x in captions]
 
     ## vocab
-    wordtoix, ixtoword, bias_init_vector = preProBuildWordVocab(captions, word_count_threshold=0)
+    if restore_path is None:
+        wordtoix, ixtoword, bias_init_vector = preProBuildWordVocab(captions, word_count_threshold=0)
 
-    np.save("./data/wordtoix", wordtoix)
-    np.save('./data/ixtoword', ixtoword)
-    np.save("./data/bias_init_vector", bias_init_vector)
+        np.save("./data/wordtoix", wordtoix)
+        np.save('./data/ixtoword', ixtoword)
+        np.save("./data/bias_init_vector", bias_init_vector)
+    else :
+        ixtoword = np.load('./data/ixtoword.npy')
+        wordtoix = {v:k for k,v in ixtoword.items()}
+        bias_init_vector = np.load('./data/bias_init_vector.npy')
 
 
     graph = tf.Graph()
