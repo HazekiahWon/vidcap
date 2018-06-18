@@ -83,6 +83,8 @@ class Video_Caption_Generator():
         ##========= switch ===========##
         self.use_scheduled_sampling = True
         prompts.append('!!! scheduled_sampling {}'.format(self.use_scheduled_sampling))
+        self.luong = False
+        prompts.append('!!! luong {}'.format(self.luong))
 
 
     def _params_usage(self):
@@ -201,28 +203,44 @@ class Video_Caption_Generator():
                 # W : h,h
                 ##=======================
                 #calculating the context vector
+                if self.luong:
+                    keys = tf.nn.xw_plus_b(hidden1_, self.att_W, self.att_b)#tf.layers.dense(hidden1, self.dim_hidden)
+                    keys = tf.reshape(keys, [self.batch_size, -1, self.dim_hidden])
+                    query = tf.expand_dims(output2, axis=1)
+                    alpha = tf.matmul(query, keys, transpose_b=True)
+                    alpha = tf.squeeze(alpha) # b,n
+                    alpha = tf.nn.softmax(alpha)
 
-                keys = tf.nn.xw_plus_b(hidden1_, self.att_W, self.att_b)#tf.layers.dense(hidden1, self.dim_hidden)
-                keys = tf.reshape(keys, [self.batch_size, -1, self.dim_hidden])
-                query = tf.expand_dims(output2, axis=1)
-                alpha = tf.matmul(query, keys, transpose_b=True)
-                alpha = tf.squeeze(alpha) # b,n
-                alpha = tf.nn.softmax(alpha)
-                contexts = tf.multiply(tf.expand_dims(alpha, axis=-1), hidden1) # b,n,h
-                context = tf.reduce_sum(contexts, axis=1) # b,h
-                # hidden1 = tf.reshape(hidden1, [-1, self.dim_hidden]) # (b*n) * h
-                # hidden2 = tf.reshape(output2, [-1, 1]) # (b*h) * 1
-                # W_bilinear = tf.tile(self.att_W, tf.stack([1, batch_size])) # h * (b*h)
-                # alpha = tf.matmul(hidden1, W_bilinear)
-                # alpha = tf.matmul(alpha, hidden2) # (b*n) * 1
-                # alpha = tf.reshape(alpha, [self.batch_size, -1]) # b * n
-                # alpha = tf.nn.softmax(alpha) # b * n
-                # alpha = tf.reshape(alpha, [-1,1]) # (b*n) * 1
-                # context = alpha * hidden1 # (b*n) * h
-                # context = tf.reshape(context, [self.batch_size, -1, self.dim_hidden]) # b * n * h
-                # context = tf.reduce_sum(context, axis=1) # b * h
+                else:
+                    ##======================#
+                    # bahdaunau attention
+                    # v*tanh(w1*keys+w2*query)
+                    # keys : b,n_frame,h
+                    # query : b,1,h
+                    # v : h
+                    ##======================#
+                    bah_w1 = scope.get_variable('bahdanau_w_keys',
+                                                shape=(dim_hidden,dim_hidden),
+                                                dtype=tf.float32,
+                                                initializer=tf.constant_initializer(np.sqrt(1./dim_hidden)))
+                    bah_w2 = scope.get_variable('bahdanau_w_query',
+                                                shape=(dim_hidden, dim_hidden),
+                                                dtype=tf.float32,
+                                                initializer=tf.constant_initializer(np.sqrt(1. / dim_hidden)))
+                    bah_v = scope.get_variable('bahdanau_v',
+                                                shape=(dim_hidden),
+                                                dtype=tf.float32)
+                    keys = tf.reshape(tf.matmul(hidden1_, bah_w1), (self.batch_size, -1, self.dim_hidden)) # b,n,h
+                    query = tf.expand_dims(tf.matmul(output2, bah_w2), axis=1) # b,1,h
+                    alpha = tf.reduce_sum(bah_v*tf.nn.tanh(keys, query), axis=-1) # b,n
+                    alpha = tf.nn.softmax(alpha) # b,n
+                    # print(alpha.shape)
 
-                alphas.append(tf.reshape(alpha, (self.batch_size,-1))) # b,n_frame
+                contexts = tf.multiply(tf.expand_dims(alpha, axis=-1), hidden1)  # b,n,h
+                context = tf.reduce_sum(contexts, axis=1)  # b,h
+
+                # tf.reshape(alpha, (self.batch_size,-1))
+                alphas.append(alpha) # b,n_frame
 
 
                 with tf.variable_scope("LSTM2"):
