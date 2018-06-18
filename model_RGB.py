@@ -241,58 +241,91 @@ class Video_Caption_Generator():
         video = tf.placeholder(tf.float32, [1, self.n_frames, self.dim_image])
         video_mask = tf.placeholder(tf.float32, [1, self.n_frames])
 
-        video_flat = tf.reshape(video, [-1, self.dim_image])
-        image_emb = tf.nn.xw_plus_b(video_flat, self.encode_image_W, self.encode_image_b)
-        image_emb = tf.reshape(image_emb, [1, self.n_frames, self.dim_hidden])
+        self.batch_size = tf.shape(video)[0]
+        # self.decoder_W = tf.Variable(tf.random_uniform([self.batch_size, dim_hidden], -0.1, 0.1), name='decoder_W')
 
-        state1 = tf.zeros([1, self.lstm1.state_size])
-        state2 = tf.zeros([1, self.lstm2.state_size])
-        padding_lstm1 = tf.zeros([1, self.dim_hidden])
-        padding_lstm2 = tf.zeros([1, 2*self.dim_hidden])
-        generated_words = []
+        ##===================================================
+        # shallow feature representation
+        # vgg_feature (dim_image) -> embeddings (dim_hidden)
+        ##===================================================
+        video_flat = tf.reshape(video, [-1, self.dim_image])  # b*n_frame, dim_img
+        image_emb = tf.nn.xw_plus_b(video_flat, self.encode_image_W, self.encode_image_b)  # b*n_frame,dim_hidden
+        image_emb = tf.reshape(image_emb, [self.batch_size, self.n_frames, self.dim_hidden])  #
+
+        # state1 = tf.zeros([self.batch_size, self.lstm1.state_size])
+        # state2 = tf.zeros([self.batch_size, self.lstm2.state_size])
+        state1 = self.lstm1.zero_state(self.batch_size, dtype=tf.float32)
+        state2 = self.lstm2.zero_state(self.batch_size, dtype=tf.float32)
+
+        padding_lstm1 = tf.zeros([self.batch_size, self.dim_hidden])  # to replace inputs during decoding
+        padding_lstm2 = tf.zeros([self.batch_size, 2 * self.dim_hidden])  # attention+word_embd
+
+
 
         probs = []
         embeds = []
         hidden1 = []
+        ##############################  Encoding Stage ##################################
         with tf.variable_scope(tf.get_variable_scope()) as scope:
             for i in range(0, self.n_frames):
                 if i > 0:
                     tf.get_variable_scope().reuse_variables()
 
+                ##====================================================
+                # LSTM1
+                # for each time i
+                # input : embeddings (dim_hidden), state1 (dim_hidden)
+                # output : out1 (dim_hidden), state1 (dim_hidden)
+                ##====================================================
                 with tf.variable_scope("LSTM1"):
                     output1, state1 = self.lstm1(image_emb[:, i, :], state1)
 
-                # if i==0:
-                #     hidden1 = output1 # 1*h
+                # collecting all hidden states from LSTM1
+                # if i == 0:
+                #     hidden1 = tf.expand_dims(output1, axis=1) # hidden1: b * n * h
                 # else:
-                #     hidden1 = tf.concat([hidden1,output1], axis=0) # n*h
-                hidden1.append(output1)
-
+                #     hidden1 = tf.concat([hidden1, tf.expand_dims(output1, axis=1)], axis=1)
+                hidden1.append(output1)  # n,b,h
+                ##====================================================
+                # LSTM2
+                # for each time i
+                # input : [atn,word_embd,out1] (2+1*dim_hidden), state2 (dim_hidden)
+                # output : out1 (dim_hidden), state1 (dim_hidden)
+                ##====================================================
                 with tf.variable_scope("LSTM2"):
                     output2, state2 = self.lstm2(tf.concat(axis=1, values=[padding_lstm2, output1]), state2)
-            hidden1 = tf.reshape(tf.stack(hidden1), [-1, dim_hidden])
 
+        ############################# Decoding Stage ######################################
         with tf.variable_scope(tf.get_variable_scope()) as scope:
+            generated_words = []
+            alphas = []
             for i in range(0, self.n_caption_lstm_step):
+                with tf.device("/cpu:0"):
+                    current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
                 tf.get_variable_scope().reuse_variables()
-
-                if i == 0:
-                    with tf.device('/cpu:0'):
-                        current_embed = tf.nn.embedding_lookup(self.Wemb, tf.ones([1], dtype=tf.int64))
 
                 with tf.variable_scope("LSTM1"):
                     output1, state1 = self.lstm1(padding_lstm1, state1)
 
+                ##=======================
+                # luong attention
+                # hidden1 : n,b,h -> b,n,h
+                # output2 : b,h -> b,1,h
+                # W : h,h
+                ##=======================
+                hidden1 = tf.reshape(tf.stack(hidden1, axis=1), [-1, self.dim_hidden])  # b,n,h
+                keys = tf.nn.xw_plus_b(hidden1, self.att_W, self.att_b)  # tf.layers.dense(hidden1, self.dim_hidden)
+                keys = tf.reshape(keys, [self.batch_size, -1, self.dim_hidden])
+                query = tf.expand_dims(output2, axis=1)
+                alpha = tf.matmul(query, keys, transpose_b=True)
+                alpha = tf.squeeze(alpha)  # b,n
+                alpha = tf.nn.softmax(alpha, axis=-1)
+                contexts = tf.multiply(tf.expand_dims(alpha, axis=-1), hidden1)  # b,n,h
+                context = tf.reduce_sum(contexts, axis=1)  # b,h
 
-                hidden2 = tf.reshape(output2, [-1, 1]) # h * 1
-                alpha = tf.matmul(hidden1, self.att_W)
-                alpha = tf.matmul(alpha, hidden2) # n * 1
-                alpha = tf.reshape(alpha, [1, -1]) # 1 * n
-                alpha = tf.nn.softmax(alpha) # 1 * n
-                alpha = tf.reshape(alpha, [-1,1]) # n * 1
-                context = alpha * hidden1 # n * h
-                context = tf.reduce_sum(context, axis=0) #  h
-                context = tf.reshape(context, [1, -1]) # 1*h
+                alphas.append(tf.reshape(alpha, (self.batch_size, -1)))  # n_cap,b,n_frame
+                alphas = tf.reduce_sum(tf.stack(alphas), axis=0) # b,n_frame
+                alphas = tf.transpose(alphas) # n_frame, b -> for each batch, how does n_frame as a whole perform
 
                 with tf.variable_scope("LSTM2"):
                     output2, state2 = self.lstm2(tf.concat(axis=1, values=[current_embed, context, output1]), state2)
@@ -310,7 +343,7 @@ class Video_Caption_Generator():
 
         self._params_usage()
 
-        return video, video_mask, generated_words, probs, embeds
+        return video, video_mask, generated_words, probs, embeds, alphas
 
 
 def get_video_data(video_data_path, video_feat_path, train=True):
@@ -425,13 +458,13 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
     if restore_path is None:
         wordtoix, ixtoword, bias_init_vector = preProBuildWordVocab(captions, word_count_threshold=0)
 
-        np.save("./data/wordtoix", wordtoix)
-        np.save('./data/ixtoword', ixtoword)
-        np.save("./data/bias_init_vector", bias_init_vector)
+        np.save(os.path.join(model_path, 'wordtoix'), wordtoix)
+        # np.save('./data/ixtoword', ixtoword)
+        np.save(os.path.join(model_path, 'bias_init_vector'), bias_init_vector)
     else :
-        ixtoword = pd.Series(np.load('./data/ixtoword.npy').tolist())
+        ixtoword = pd.Series(np.load(os.path.join(restore_path, 'wordtoix')).tolist())
         wordtoix = {v:k for k,v in ixtoword.items()}
-        bias_init_vector = np.load('./data/bias_init_vector.npy')
+        bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector'))
 
 
     graph = tf.Graph()
@@ -625,7 +658,7 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
                 "\nEpoch {} with learning rate {} is done. Avg BLEU is {}".format(epoch, sess.run(learning_rate), avg_bleu))
             add_custom_summ(tagname='bleu', tagvalue=avg_bleu, writer=summ_writer, iters=epoch)
 
-            if np.mod(epoch, save_freq) == 0:
+            if np.mod(epoch+1, save_freq) == 0:
                 save_name = os.path.join(model_path,
                                         'loss_{}_{}'.format(
                                             str(tmp).replace('.','@'),
@@ -639,13 +672,13 @@ def train(restore_path=os.path.join('models', '20180617_210234')):
 
         loss_fd.close()
 
-def test(model_path='./models/model-910'):
+def test(restore_path=os.path.join('models', '')):
     test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
     test_videos = test_data['video_path'].unique()
 
-    ixtoword = pd.Series(np.load('./data/ixtoword.npy').tolist())
-
-    bias_init_vector = np.load('./data/bias_init_vector.npy')
+    ixtoword = pd.Series(np.load(os.path.join(restore_path, 'wordtoix')).tolist())
+    # wordtoix = {v: k for k, v in ixtoword.items()}
+    bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector'))
 
     model = Video_Caption_Generator(
             dim_image=dim_image,
@@ -657,12 +690,12 @@ def test(model_path='./models/model-910'):
             n_caption_lstm_step=n_caption_lstm_step,
             bias_init_vector=bias_init_vector)
 
-    video_tf, video_mask_tf, caption_tf, probs_tf, last_embed_tf = model.build_generator()
+    video_tf, video_mask_tf, caption_tf, probs_tf, last_embed_tf, alphas = model.build_generator()
 
     sess = tf.InteractiveSession()
 
     saver = tf.train.Saver()
-    saver.restore(sess, model_path)
+    saver.restore(sess, restore_path)
 
     test_output_txt_fd = open('S2VT_results.txt', 'w')
     for idx, video_feat_path in enumerate(test_videos):
@@ -680,15 +713,11 @@ def test(model_path='./models/model-910'):
             #video_feat = shape_templete
             #video_mask = np.ones((video_feat.shape[0], n_frame_step))
 
-        generated_word_index = sess.run(caption_tf, feed_dict={video_tf:video_feat, video_mask_tf:video_mask})
-        # generated_words = ixtoword[generated_word_index]
-        #
-        # punctuation = np.argmax(np.array(generated_words) == '<eos>') + 1
-        # generated_words = generated_words[:punctuation]
-        #
-        # generated_sentence = ' '.join(generated_words)
-        # generated_sentence = generated_sentence.replace('<bos> ', '')
-        # generated_sentence = generated_sentence.replace(' <eos>', '')
+        generated_word_index, alphas_ = sess.run([caption_tf, alphas], feed_dict={video_tf:video_feat, video_mask_tf:video_mask})
+
+        atn_w = pd.DataFrame(alphas_)
+        print(atn_w.describe())
+        input()
         generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
         print(generated_sentence,'\n')
         test_output_txt_fd.write(video_feat_path + '\n')
