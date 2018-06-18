@@ -31,6 +31,7 @@ logdir = os.path.join('tensorboard', time_id)
 
 prompts = []
 train_test_ratio = 0.9
+scheduled_sampling = True
 #=======================================================================================
 # Train Parameters
 #=======================================================================================
@@ -79,6 +80,9 @@ class Video_Caption_Generator():
         self.att_W = tf.Variable( tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='att_W')
         self.att_b = tf.Variable( tf.zeros([dim_hidden]), name='att_b')
 
+        ##========= switch ===========##
+        self.use_scheduled_sampling = True
+
 
     def _params_usage(self):
         total = 0
@@ -96,11 +100,14 @@ class Video_Caption_Generator():
 
     def build_model(self):
 
-        video = tf.placeholder(tf.float32, [None, self.n_frames, self.dim_image])
-        video_mask = tf.placeholder(tf.float32, [None, self.n_frames])
+        video = tf.placeholder(tf.float32, [None, self.n_frames, self.dim_image], name='video')
+        video_mask = tf.placeholder(tf.float32, [None, self.n_frames], name='vid_mask')
 
-        caption = tf.placeholder(tf.int32, [None, self.n_caption_lstm_step+1])
-        caption_mask = tf.placeholder(tf.float32, [None, self.n_caption_lstm_step+1])
+        caption = tf.placeholder(tf.int32, [None, self.n_caption_lstm_step+1], name='caption')
+        caption_mask = tf.placeholder(tf.float32, [None, self.n_caption_lstm_step+1], name='caption_mask')
+
+        if self.use_scheduled_sampling:
+            sampling_thresh = tf.placeholder(tf.float32, (), 'sampling_thresh')
 
         self.batch_size = tf.shape(video)[0]
         # self.decoder_W = tf.Variable(tf.random_uniform([self.batch_size, dim_hidden], -0.1, 0.1), name='decoder_W')
@@ -164,8 +171,21 @@ class Video_Caption_Generator():
             generated_words = []
             alphas = []
             for i in range(0, self.n_caption_lstm_step):
+                # #============= the original version =============#
+                # with tf.device("/cpu:0"): # suppose caption has <bos> at the beggining
+                #     current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
+                # #================================================#
                 with tf.device("/cpu:0"):
-                    current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
+                    if self.use_scheduled_sampling:
+                        if i==0:
+                            current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
+                        else:
+                            current_embed = tf.cond(tf.random_uniform(shape=(), minval=0., maxval=1.) < sampling_thresh,
+                                                    true_fn=lambda : last_embed,
+                                                    false_fn=lambda : tf.nn.embedding_lookup(self.Wemb, caption[:, i]))
+                    else :
+                        current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
+
                 tf.get_variable_scope().reuse_variables()
 
                 with tf.variable_scope("LSTM1"):
@@ -214,6 +234,11 @@ class Video_Caption_Generator():
                 max_prob_index = tf.argmax(logit_words, 1) # b,1
                 generated_words.append(max_prob_index) # batch of words at time t
 
+                if self.use_scheduled_sampling:
+                    with tf.device("/cpu:0"):
+                        last_embed = tf.nn.embedding_lookup(self.Wemb, max_prob_index)
+                        last_embed = tf.expand_dims(current_embed, 0)
+
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=logit_words, labels=onehot_labels)
                 cross_entropy = cross_entropy * caption_mask[:,i]
 
@@ -239,7 +264,10 @@ class Video_Caption_Generator():
 
         self._params_usage()
 
-        return loss, video, video_mask, caption, caption_mask, probs, generated_words, summary_op
+        ret = [loss, video, video_mask, caption, caption_mask, probs, generated_words, summary_op]
+        if self.use_scheduled_sampling:
+            ret.append(sampling_thresh)
+        return ret
 
 
     def build_generator(self):
@@ -495,7 +523,10 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
                 n_caption_lstm_step=n_caption_lstm_step,
                 bias_init_vector=bias_init_vector)
 
-        tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model.build_model()
+        model_ops = model.build_model()
+        tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model_ops[:9]
+        if scheduled_sampling:
+            tf_sampling = model_ops[-1]
         sess = tf.Session(graph=graph)
 
         # train op, init
@@ -550,6 +581,9 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
         # loss_to_draw = []
 
         xent = 0.
+        if scheduled_sampling:
+            # x^1/2, x=0.~1.
+            sampling_threshes = [(float(x)/n_epochs)**0.5 for x in range(0, n_epochs)]
 
         for epoch in range(0, n_epochs):
             # loss_to_draw_epoch = []
@@ -632,14 +666,18 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
                 ops = [train_op, tf_loss, tf_predicted]
                 if step % summ_freq == 0:
                     ops.append(summary_op)
-                ret = sess.run(
-                        ops,
-                        feed_dict={
-                            tf_video: current_feats,
-                            tf_video_mask : current_video_masks,
-                            tf_caption: current_caption_matrix,
-                            tf_caption_mask: current_caption_masks
-                            })
+
+                fd = {
+                    tf_video: current_feats,
+                    tf_video_mask : current_video_masks,
+                    tf_caption: current_caption_matrix,
+                    tf_caption_mask: current_caption_masks
+                    }
+
+                if scheduled_sampling:
+                    fd[tf_sampling] = sampling_threshes[epoch]
+
+                ret = sess.run(ops, feed_dict=fd)
                 # loss_to_draw_epoch.append(loss_val)
                 _, loss_val, predicted_captions = ret[:3]
                 xent += loss_val
