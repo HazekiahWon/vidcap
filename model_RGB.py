@@ -306,9 +306,14 @@ class Video_Caption_Generator():
             generated_words = []
             alphas = []
             for i in range(0, self.n_caption_lstm_step):
-                with tf.device("/cpu:0"):
-                    current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
+                # with tf.device("/cpu:0"):
+                #     current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
                 tf.get_variable_scope().reuse_variables()
+
+                if i == 0:
+                    with tf.device('/cpu:0'):
+                        current_embed = tf.nn.embedding_lookup(self.Wemb, tf.ones([1], dtype=tf.int64))
+
 
                 with tf.variable_scope("LSTM1"):
                     output1, state1 = self.lstm1(padding_lstm1, state1)
@@ -330,8 +335,7 @@ class Video_Caption_Generator():
                 context = tf.reduce_sum(contexts, axis=1)  # b,h
 
                 alphas.append(tf.reshape(alpha, (self.batch_size, -1)))  # n_cap,b,n_frame
-                alphas = tf.reduce_sum(tf.stack(alphas), axis=0) # b,n_frame
-                alphas = tf.transpose(alphas) # n_frame, b -> for each batch, how does n_frame as a whole perform
+
 
                 with tf.variable_scope("LSTM2"):
                     output2, state2 = self.lstm2(tf.concat(axis=1, values=[current_embed, context, output1]), state2)
@@ -346,6 +350,9 @@ class Video_Caption_Generator():
                     current_embed = tf.expand_dims(current_embed, 0)
 
                 embeds.append(current_embed)
+
+            alphas = tf.reduce_sum(tf.stack(alphas), axis=0)  # b,n_frame
+            alphas = tf.transpose(alphas)  # n_frame, b -> for each batch, how does n_frame as a whole perform
 
         self._params_usage()
 
@@ -422,6 +429,8 @@ def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
 def word_indices_to_sentence(ixtoword, generated_word_indices):
 
     generated_words = [ixtoword[idx] for idx in generated_word_indices]
+    # print(generated_words)
+    # input()
 
     punctuation = np.argmax(np.array(generated_words) == '<eos>') + 1
     generated_words = generated_words[:punctuation]
@@ -440,7 +449,7 @@ def add_custom_summ(tagname, tagvalue, writer, iters):
 
     writer.add_summary(psnr_summ, iters)
 
-def train(restore_path=None):#os.path.join('models', '20180617_210234')):
+def train(restore_path=os.path.join('models', '')):#os.path.join('models', '20180617_210234')):
     global prompts,learning_rate
     ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
@@ -468,9 +477,9 @@ def train(restore_path=None):#os.path.join('models', '20180617_210234')):
         # np.save('./data/ixtoword', ixtoword)
         np.save(os.path.join(model_path, 'bias_init_vector'), bias_init_vector)
     else :
-        ixtoword = pd.Series(np.load(os.path.join(restore_path, 'wordtoix')).tolist())
-        wordtoix = {v:k for k,v in ixtoword.items()}
-        bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector'))
+        ixtoword = pd.Series(np.load(os.path.join(restore_path, 'ixtoword.npy')).tolist())
+        wordtoix = {v: k for k, v in ixtoword.items()}
+        bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector.npy'))
 
 
     graph = tf.Graph()
@@ -678,13 +687,14 @@ def train(restore_path=None):#os.path.join('models', '20180617_210234')):
 
         loss_fd.close()
 
-def test(restore_path=os.path.join('models', '')):
+
+def test(restore_path=os.path.join('models', '20180618_041100')):
     test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
     test_videos = test_data['video_path'].unique()
 
-    ixtoword = pd.Series(np.load(os.path.join(restore_path, 'wordtoix')).tolist())
+    ixtoword = pd.Series(np.load(os.path.join(restore_path, 'ixtoword.npy')).tolist())
     # wordtoix = {v: k for k, v in ixtoword.items()}
-    bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector'))
+    bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector.npy'))
 
     model = Video_Caption_Generator(
             dim_image=dim_image,
@@ -701,30 +711,44 @@ def test(restore_path=os.path.join('models', '')):
     sess = tf.InteractiveSession()
 
     saver = tf.train.Saver()
-    saver.restore(sess, restore_path)
+    if restore_path is not None and not os.path.exists(restore_path):
+        print('restore_model path wrong')
+        exit(1)
+    if restore_path is not None:
+        latest_ckpt = tf.train.latest_checkpoint(restore_path)
+        saver.restore(sess, latest_ckpt)
 
-    test_output_txt_fd = open('S2VT_results.txt', 'w')
-    for idx, video_feat_path in enumerate(test_videos):
-        print(idx, video_feat_path)
+    test_output_txt_fd = open(os.path.join(restore_path, 'S2VT_results.txt'), 'w')
 
-        video_feat = np.load(video_feat_path)[None,...]
-        #video_feat = np.load(video_feat_path)
-        #video_mask = np.ones((video_feat.shape[0], video_feat.shape[1]))
-        if video_feat.shape[1] == n_frame_step:
-            video_mask = np.ones((video_feat.shape[0], video_feat.shape[1]))
-        else:
-            continue
-            #shape_templete = np.zeros(shape=(1, n_frame_step, 4096), dtype=float )
-            #shape_templete[:video_feat.shape[0], :video_feat.shape[1], :video_feat.shape[2]] = video_feat
-            #video_feat = shape_templete
-            #video_mask = np.ones((video_feat.shape[0], n_frame_step))
+    print('totaling {} videos'.format(len(test_videos)))
+    idx = np.random.choice(len(test_videos))
+    video_feat_path = test_videos[idx]
+    # for idx, video_feat_path in enumerate(test_videos):
+    #     print(idx, video_feat_path)
 
-        generated_word_index, alphas_ = sess.run([caption_tf, alphas], feed_dict={video_tf:video_feat, video_mask_tf:video_mask})
+    video_feat = np.load(video_feat_path)
+    # batch_size*
+    video_feat = np.expand_dims(video_feat, axis=0)
+    #video_feat = np.load(video_feat_path)
+    #video_mask = np.ones((video_feat.shape[0], video_feat.shape[1]))
+    # if video_feat.shape[1] == n_frame_step:
+    #     video_mask = np.ones((video_feat.shape[0], video_feat.shape[1]))
+    # else:
+    #     continue
+        #shape_templete = np.zeros(shape=(1, n_frame_step, 4096), dtype=float )
+        #shape_templete[:video_feat.shape[0], :video_feat.shape[1], :video_feat.shape[2]] = video_feat
+        #video_feat = shape_templete
+        #video_mask = np.ones((video_feat.shape[0], n_frame_step))
 
-        atn_w = pd.DataFrame(alphas_)
-        print(atn_w.describe())
-        input()
-        generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
-        print(generated_sentence,'\n')
-        test_output_txt_fd.write(video_feat_path + '\n')
-        test_output_txt_fd.write(generated_sentence + '\n\n')
+    generated_word_index, alphas_ = sess.run([caption_tf, alphas], feed_dict={video_tf:video_feat, video_mask_tf:np.ones(video_feat.shape[:2], dtype=np.int)})
+
+    atn_w = pd.DataFrame(alphas_)
+    # print(atn_w.shape)
+    print(atn_w.describe())
+    # input()
+    # print(type(generated_word_index), len(generated_word_index))
+    # print(ixtoword)
+    generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
+    print(generated_sentence,'\n')
+    test_output_txt_fd.write(video_feat_path + '\n')
+    test_output_txt_fd.write(generated_sentence + '\n\n')
