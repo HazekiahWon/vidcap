@@ -154,6 +154,11 @@ class Video_Caption_Generator():
                 with tf.variable_scope("LSTM2"):
                     output2, state2 = self.lstm2(tf.concat(axis=1, values=[padding_lstm2, output1]), state2)
 
+            # print(type(hidden1))
+            hidden1 = tf.stack(hidden1, axis=1) # b,n,h
+            # print(hidden1.shape)
+            hidden1_ = tf.reshape(hidden1, [-1, self.dim_hidden])  # b*n,h
+
         ############################# Decoding Stage ######################################
         with tf.variable_scope(tf.get_variable_scope()) as scope:
             generated_words = []
@@ -173,13 +178,13 @@ class Video_Caption_Generator():
                 # W : h,h
                 ##=======================
                 #calculating the context vector
-                hidden1 = tf.reshape(tf.stack(hidden1, axis=1), [-1, self.dim_hidden]) # b,n,h
-                keys = tf.nn.xw_plus_b(hidden1, self.att_W, self.att_b)#tf.layers.dense(hidden1, self.dim_hidden)
+
+                keys = tf.nn.xw_plus_b(hidden1_, self.att_W, self.att_b)#tf.layers.dense(hidden1, self.dim_hidden)
                 keys = tf.reshape(keys, [self.batch_size, -1, self.dim_hidden])
                 query = tf.expand_dims(output2, axis=1)
                 alpha = tf.matmul(query, keys, transpose_b=True)
                 alpha = tf.squeeze(alpha) # b,n
-                alpha = tf.nn.softmax(alpha, axis=-1)
+                alpha = tf.nn.softmax(alpha)
                 contexts = tf.multiply(tf.expand_dims(alpha, axis=-1), hidden1) # b,n,h
                 context = tf.reduce_sum(contexts, axis=1) # b,h
                 # hidden1 = tf.reshape(hidden1, [-1, self.dim_hidden]) # (b*n) * h
@@ -434,7 +439,7 @@ def add_custom_summ(tagname, tagvalue, writer, iters):
 
     writer.add_summary(psnr_summ, iters)
 
-def train(restore_path=os.path.join('models', '20180617_210234')):
+def train(restore_path=None):#os.path.join('models', '20180617_210234')):
     global prompts,learning_rate
     ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
