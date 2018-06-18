@@ -82,6 +82,7 @@ class Video_Caption_Generator():
 
         ##========= switch ===========##
         self.use_scheduled_sampling = True
+        prompts.append('!!! scheduled_sampling {}'.format(self.use_scheduled_sampling))
 
 
     def _params_usage(self):
@@ -183,8 +184,10 @@ class Video_Caption_Generator():
                             current_embed = tf.cond(tf.random_uniform(shape=(), minval=0., maxval=1.) < sampling_thresh,
                                                     true_fn=lambda : last_embed,
                                                     false_fn=lambda : tf.nn.embedding_lookup(self.Wemb, caption[:, i]))
+
                     else :
                         current_embed = tf.nn.embedding_lookup(self.Wemb, caption[:, i])
+                    # print('embed look up : {}'.format(tf.nn.embedding_lookup(self.Wemb, caption[:, i]).shape))
 
                 tf.get_variable_scope().reuse_variables()
 
@@ -237,7 +240,8 @@ class Video_Caption_Generator():
                 if self.use_scheduled_sampling:
                     with tf.device("/cpu:0"):
                         last_embed = tf.nn.embedding_lookup(self.Wemb, max_prob_index)
-                        last_embed = tf.expand_dims(current_embed, 0)
+                        # last_embed = tf.expand_dims(current_embed, 0)
+                        # print('last embed {}'.format(last_embed.shape))
 
                 cross_entropy = tf.nn.softmax_cross_entropy_with_logits(logits=logit_words, labels=onehot_labels)
                 cross_entropy = cross_entropy * caption_mask[:,i]
@@ -477,8 +481,17 @@ def add_custom_summ(tagname, tagvalue, writer, iters):
 
     writer.add_summary(psnr_summ, iters)
 
-def train(restore_path=os.path.join('models', '')):#os.path.join('models', '20180617_210234')):
+def train(restore_path=None):#os.path.join('models', '')):#os.path.join('models', '20180617_210234')):
     global prompts,learning_rate
+
+    if not os.path.exists(model_path):
+        os.mkdir(model_path)
+
+    if not os.path.exists(logdir):
+        os.mkdir(logdir)
+
+    prompts.append('ckpt stored in {}, summaries in {}'.format(model_path, logdir))
+
     ## data
     train_data = get_video_train_data(video_train_data_path, video_train_feat_path)
     train_captions = train_data['Description'].values
@@ -524,22 +537,17 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
                 bias_init_vector=bias_init_vector)
 
         model_ops = model.build_model()
-        tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model_ops[:9]
+        tf_loss, tf_video, tf_video_mask, tf_caption, tf_caption_mask, tf_probs, tf_predicted, summary_op = model_ops[:8]
         if scheduled_sampling:
             tf_sampling = model_ops[-1]
         sess = tf.Session(graph=graph)
 
         # train op, init
-        if not os.path.exists(model_path):
-            os.mkdir(model_path)
+        step = 0
+        step_ = tf.Variable(0, trainable=False, name='global_step')
+        advance_step = step_.assign_add(1)
 
-        if not os.path.exists(logdir):
-            os.mkdir(logdir)
-
-        prompts.append('ckpt stored in {}, summaries in {}'.format(model_path, logdir))
-
-        step = 1
-        learning_rate = tf.train.exponential_decay(learning_rate, step, 5000, 0.9)
+        learning_rate = tf.reduce_max([tf.train.exponential_decay(learning_rate, step_, 5000, 0.9), 1e-6])
         train_op = tf.train.AdamOptimizer(learning_rate).minimize(tf_loss)
         summ_writer = tf.summary.FileWriter(logdir, graph=tf.get_default_graph())
 
@@ -583,7 +591,7 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
         xent = 0.
         if scheduled_sampling:
             # x^1/2, x=0.~1.
-            sampling_threshes = [(float(x)/n_epochs)**0.5 for x in range(0, n_epochs)]
+            sampling_threshes = [(float(x)/n_epochs)**0.5 for x in range(1, n_epochs+1)]
 
         for epoch in range(0, n_epochs):
             # loss_to_draw_epoch = []
@@ -663,8 +671,8 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
                 #     tf_video:current_feats,
                 #     tf_caption: current_caption_matrix
                 #     })
-                ops = [train_op, tf_loss, tf_predicted]
-                if step % summ_freq == 0:
+                ops = [train_op, advance_step, tf_loss, tf_predicted]
+                if (step+1) % summ_freq == 0:
                     ops.append(summary_op)
 
                 fd = {
@@ -679,7 +687,8 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
 
                 ret = sess.run(ops, feed_dict=fd)
                 # loss_to_draw_epoch.append(loss_val)
-                _, loss_val, predicted_captions = ret[:3]
+                _, step, loss_val, predicted_captions = ret[:4]
+                # step = sess.run(step_)
                 xent += loss_val
 
                 i = np.random.choice(len(predicted_captions))
@@ -695,21 +704,25 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
                     'groundtru="{}"'.format(ground_sents[i]),
                     '=============================']
 
-                if step % summ_freq == 0:
-                    summ_writer.add_summary(ret[3], step)
+                if step % summ_freq == 0: # after the step advance, so should be step-1
+                    summ_writer.add_summary(ret[4], step)
                     tmp = xent / summ_freq
                     add_custom_summ(tagname='xent',tagvalue=tmp,writer=summ_writer,iters=step)
                     prompts += ['*****************************',
                                 'in this {} steps, avg xent is {}'.format(summ_freq, tmp),
                                 '*****************************']
                     xent = 0.
-                step += 1
+                # step += 1
 
             avg_bleu = total_bleu / (step-epoch_start)
+            # prompts.append('{}-{}'.format(step,epoch_start))
 
             prompts.append(
                 "\nEpoch {} with learning rate {} is done. Avg BLEU is {}".format(epoch, sess.run(learning_rate), avg_bleu))
+            if scheduled_sampling:
+                prompts.append('\nSampling rate for this epoch is {}'.format(sampling_threshes[epoch]))
             add_custom_summ(tagname='bleu', tagvalue=avg_bleu, writer=summ_writer, iters=epoch)
+            add_custom_summ(tagname='sampling', tagvalue=sampling_threshes[epoch], writer=summ_writer, iters=epoch)
 
             if np.mod(epoch+1, save_freq) == 0:
                 save_name = os.path.join(model_path,
