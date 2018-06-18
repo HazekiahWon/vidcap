@@ -688,13 +688,21 @@ def train(restore_path=os.path.join('models', '')):#os.path.join('models', '2018
         loss_fd.close()
 
 
-def test(restore_path=os.path.join('models', '20180618_041100')):
+def test(restore_path=os.path.join('models', '20180618_041100'), idx=None):
     test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
     test_videos = test_data['video_path'].unique()
 
     ixtoword = pd.Series(np.load(os.path.join(restore_path, 'ixtoword.npy')).tolist())
     # wordtoix = {v: k for k, v in ixtoword.items()}
     bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector.npy'))
+
+    if idx is None:
+        idx = input('here are {} videos for testing. Which would you like to choose?\n'.format(len(test_videos)))
+        if idx=='':
+            idx = np.random.choice(len(test_videos))
+            print('sooooo, i randomly choose #{}:{} for you.'.format(idx, test_videos[idx]))
+    print('*********************processing*********************')
+
 
     model = Video_Caption_Generator(
             dim_image=dim_image,
@@ -720,35 +728,20 @@ def test(restore_path=os.path.join('models', '20180618_041100')):
 
     test_output_txt_fd = open(os.path.join(restore_path, 'S2VT_results.txt'), 'w')
 
-    print('totaling {} videos'.format(len(test_videos)))
-    idx = np.random.choice(len(test_videos))
     video_feat_path = test_videos[idx]
-    # for idx, video_feat_path in enumerate(test_videos):
-    #     print(idx, video_feat_path)
 
     video_feat = np.load(video_feat_path)
     # batch_size*
     video_feat = np.expand_dims(video_feat, axis=0)
-    #video_feat = np.load(video_feat_path)
-    #video_mask = np.ones((video_feat.shape[0], video_feat.shape[1]))
-    # if video_feat.shape[1] == n_frame_step:
-    #     video_mask = np.ones((video_feat.shape[0], video_feat.shape[1]))
-    # else:
-    #     continue
-        #shape_templete = np.zeros(shape=(1, n_frame_step, 4096), dtype=float )
-        #shape_templete[:video_feat.shape[0], :video_feat.shape[1], :video_feat.shape[2]] = video_feat
-        #video_feat = shape_templete
-        #video_mask = np.ones((video_feat.shape[0], n_frame_step))
 
     generated_word_index, alphas_ = sess.run([caption_tf, alphas], feed_dict={video_tf:video_feat, video_mask_tf:np.ones(video_feat.shape[:2], dtype=np.int)})
 
-    atn_w = pd.DataFrame(alphas_)
+    # atn_w = pd.DataFrame(alphas_)
     # print(atn_w.shape)
-    print(atn_w.describe())
-    # input()
-    # print(type(generated_word_index), len(generated_word_index))
-    # print(ixtoword)
+    # print(atn_w.describe())
+
     generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
+    print('********************* caption *********************')
     print(generated_sentence,'\n')
     test_output_txt_fd.write(video_feat_path + '\n')
     test_output_txt_fd.write(generated_sentence + '\n\n')
