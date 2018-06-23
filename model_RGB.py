@@ -858,10 +858,11 @@ def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
 
     gen = predict_with_restore(test_videos=test_videos, restore_path=restore_path, idx=None)
 
-    text = []
-    fd = open('validation.txt', 'w')
+    # text = []
+    # fd = open('validation.txt', 'w')
 
     cnt = 0
+    items = []
     for generated_sentence in gen:
         # compute the minimum
         current_vpath = test_videos[cnt]
@@ -870,22 +871,30 @@ def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
         # print(current_captions.columns)
         # input()
         bleus = [BLEU(generated_sentence, ground) for ground in current_captions['Description']]
-        text.append('for video {} predicted : {}'.format(current_vpath.split(r'/')[-1], generated_sentence))
-        text.append('average bleu score is {}'.format(np.mean(bleus)))
+        # text.append('for video {} predicted : {}'.format(current_vpath.split(r'/')[-1], generated_sentence))
+        # text.append('average bleu score is {}'.format(np.mean(bleus)))
         best_index = np.argmax(bleus)
+        best_score = bleus[best_index]
+        best_match = current_captions['Description']
+        vname = current_vpath.split('/')[-1]
+        vname = vname[:-4]
+        items.append([vname, generated_sentence, best_match, best_score])
+    df = pd.DataFrame(items, columns=['vname', 'predicted_caption', 'gnd_truth', 'BLEU'])
+    avg_bleu = df['BLEU'].mean()
+    best_bleu = df['BLEU'].max()
+    min_bleu = df['BLEU'].min()
+    df.to_csv(os.path.join(restore_path, 'validation.csv'))
+    with open(os.path.join(restore_path, 'validation.csv')) as fd:
+        fd.write(','.join([avg_bleu,best_bleu,min_bleu]))
+
         # print(best_index.shape)
         # input()
-        text.append('the best matched ground truth with bleu={} is\n{}'.format(bleus[best_index],
-                                                                         current_captions['Description'].iloc[best_index]))
-        text.append('======================================')
+        # text.append('the best matched ground truth with bleu={} is\n{}'.format(bleus[best_index],
+        #                                                                  current_captions['Description'].iloc[best_index]))
+        # text.append('======================================')
 
-        print('\n'.join(text))
-        fd.write('\n'.join(text))
-        text.clear()
-
-
-
-
-
+        # print('\n'.join(text))
+        # fd.write('\n'.join(text))
+        # text.clear()
 if __name__ == '__main__':
     validate_all_test()
