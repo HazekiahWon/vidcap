@@ -858,6 +858,9 @@ def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
 
     gen = predict_with_restore(test_videos=test_videos, restore_path=restore_path, idx=None)
 
+    text = []
+    fd = open('validation.txt', 'w')
+
     cnt = 0
     for generated_sentence in gen:
         # compute the minimum
@@ -867,11 +870,21 @@ def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
         # print(current_captions.columns)
         # input()
         bleus = [BLEU(generated_sentence, ground) for ground in current_captions['Description']]
-        print(generated_sentence)
-        print('average bleu score for video {} is {}'.format(current_vpath.split(os.pathsep))[-1], np.mean(bleus))
+        text.append('for video {} predicted : {}'.format(current_vpath.split(r'/')[-1], generated_sentence))
+        text.append('average bleu score is {}'.format(np.mean(bleus)))
         best_index = np.argmax(bleus)
-        print('the best matched ground truth with bleu={} is\n{}'.format(bleus[best_index],
+        # print(best_index.shape)
+        # input()
+        text.append('the best matched ground truth with bleu={} is\n{}'.format(bleus[best_index],
                                                                          current_captions['Description'].iloc[best_index]))
+        text.append('======================================')
+
+        print('\n'.join(text))
+        fd.write('\n'.join(text))
+        text.clear()
+
+
+
 
 
 if __name__ == '__main__':
