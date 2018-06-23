@@ -256,7 +256,7 @@ class Video_Caption_Generator():
                 max_prob_index = tf.argmax(logit_words, 1) # b,1
                 generated_words.append(max_prob_index) # batch of words at time t
 
-                if self.use_scheduled_sampling:
+                if not train or self.use_scheduled_sampling:
                     with tf.device("/cpu:0"):
                         last_embed = tf.nn.embedding_lookup(self.word_embeddings, max_prob_index)
                         # last_embed = tf.expand_dims(current_embed, 0)
@@ -486,7 +486,7 @@ def preProBuildWordVocab(sentence_iterator, word_count_threshold=5):
     return wordtoix, ixtoword, bias_init_vector
 
 def word_indices_to_sentence(ixtoword, generated_word_indices):
-
+    assert len(generated_word_indices.shape)==1
     generated_words = [ixtoword[idx] for idx in generated_word_indices]
     # print(generated_words)
     # input()
@@ -825,7 +825,7 @@ def predict_with_restore(test_videos, restore_path=os.path.join('models', '20180
 
         generated_word_index = sess.run(tf_predicted_indices, feed_dict={tf_video:video_feat, tf_video_mask:np.ones(video_feat.shape[:2], dtype=np.int)})
 
-        generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
+        generated_sentence = word_indices_to_sentence(ixtoword, np.squeeze(generated_word_index))
         yield generated_sentence
 
 
@@ -856,7 +856,7 @@ def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
     test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
     test_videos = test_data['video_path'].unique()
     groups = test_data.groupby('video_path')
-    print(test_data.columns)
+    # print(test_data.columns)
 
     gen = predict_with_restore(test_videos=test_videos, restore_path=restore_path, idx=None)
 
@@ -866,8 +866,8 @@ def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
         current_vpath = test_videos[cnt]
         cnt += 1
         current_captions = groups.get_group(current_vpath) # get all the captions
-        print(current_captions.columns)
-        input()
+        # print(current_captions.columns)
+        # input()
         bleus = [BLEU(generated_sentence, ground) for ground in current_captions['Description']]
         print(generated_sentence, '\n')
         print(np.mean(bleus))
