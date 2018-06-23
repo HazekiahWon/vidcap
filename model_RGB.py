@@ -31,7 +31,7 @@ logdir = os.path.join('tensorboard', time_id)
 
 prompts = []
 train_test_ratio = 0.9
-scheduled_sampling = True
+scheduled_sampling = False
 #=======================================================================================
 # Train Parameters
 #=======================================================================================
@@ -46,13 +46,13 @@ n_epochs = 1000
 batch_size = 32
 # factor = 31
 summ_freq = 25
-save_freq = 5
+save_freq = 50
 learning_rate = 0.0001
 alpha_baseline = 0.3*n_caption_lstm_step / float(n_video_lstm_step)
 alph_loss_weight = 0.5
 
 class Video_Caption_Generator():
-    def __init__(self, dim_image, n_words, dim_hidden, batch_size, n_video_lstm_step, n_caption_lstm_step, bias_init_vector=None):
+    def __init__(self, dim_image, n_words, dim_hidden, scheduled_sampling, n_video_lstm_step, n_caption_lstm_step, bias_init_vector=None):
         self.dim_image = dim_image
         self.n_words = n_words
         self.dim_hidden = dim_hidden
@@ -70,6 +70,7 @@ class Video_Caption_Generator():
 
         self.encode_image_W = tf.Variable( tf.random_uniform([dim_image, dim_hidden], -0.1, 0.1), name='encode_image_W')
         self.encode_image_b = tf.Variable( tf.zeros([dim_hidden]), name='encode_image_b')
+        # print(self.encode_image_W.dtype)
 
         self.embed_word_W = tf.Variable(tf.random_uniform([dim_hidden, n_words], -0.1,0.1), name='embed_word_W')
         if bias_init_vector is not None:
@@ -77,14 +78,20 @@ class Video_Caption_Generator():
         else:
             self.embed_word_b = tf.Variable(tf.zeros([n_words]), name='embed_word_b')
 
-        self.att_W = tf.Variable( tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='att_W')
-        self.att_b = tf.Variable( tf.zeros([dim_hidden]), name='att_b')
-
         ##========= switch ===========##
-        self.use_scheduled_sampling = True
+        self.use_scheduled_sampling = scheduled_sampling
         prompts.append('!!! scheduled_sampling {}'.format(self.use_scheduled_sampling))
         self.luong = False
         prompts.append('!!! luong {}'.format(self.luong))
+
+        if self.luong:
+            self.att_W = tf.Variable(tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='att_W')
+            self.att_b = tf.Variable(tf.zeros([dim_hidden]), name='att_b')
+        else :
+            self.bah_w1 = tf.Variable(tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='bah_w1')
+            self.bah_w2 = tf.Variable(tf.random_uniform([dim_hidden, dim_hidden], -0.1, 0.1), name='bah_w2')
+            self.bah_v = tf.Variable(initial_value=tf.constant(np.math.sqrt(1./dim_hidden), dtype=tf.float32, shape=[dim_hidden]), name='bah_v')
+#tf.Variable(tf.random_uniform([dim_hidden], -0.1, 0.1), name='bah_v')
 
 
     def _params_usage(self):
@@ -110,6 +117,7 @@ class Video_Caption_Generator():
         caption_mask = tf.placeholder(tf.float32, [None, self.n_caption_lstm_step+1], name='caption_mask')
 
         if self.use_scheduled_sampling:
+            print(self.use_scheduled_sampling)
             sampling_thresh = tf.placeholder(tf.float32, (), 'sampling_thresh')
 
         self.batch_size = tf.shape(video)[0]
@@ -219,25 +227,22 @@ class Video_Caption_Generator():
                     # query : b,1,h
                     # v : h
                     ##======================#
-                    bah_w1 = scope.get_variable('bahdanau_w_keys',
-                                                shape=(dim_hidden,dim_hidden),
-                                                dtype=tf.float32,
-                                                initializer=tf.constant_initializer(np.sqrt(1./dim_hidden)))
-                    bah_w2 = scope.get_variable('bahdanau_w_query',
-                                                shape=(dim_hidden, dim_hidden),
-                                                dtype=tf.float32,
-                                                initializer=tf.constant_initializer(np.sqrt(1. / dim_hidden)))
-                    bah_v = scope.get_variable('bahdanau_v',
-                                                shape=(dim_hidden),
-                                                dtype=tf.float32)
-                    keys = tf.reshape(tf.matmul(hidden1_, bah_w1), (self.batch_size, -1, self.dim_hidden)) # b,n,h
-                    query = tf.expand_dims(tf.matmul(output2, bah_w2), axis=1) # b,1,h
-                    alpha = tf.reduce_sum(bah_v*tf.nn.tanh(keys, query), axis=-1) # b,n
+                    # print(hidden1_.shape, self.bah_w1.shape)
+                    keys = tf.reshape(tf.matmul(hidden1_, self.bah_w1), (self.batch_size, self.n_frames, self.dim_hidden)) # b,n,h
+                    # print(keys.shape)
+                    query = tf.expand_dims(tf.matmul(output2, self.bah_w2), axis=1) # b,1,h
+                    # print(output2.shape, self.bah_w2.shape)
+                    # print(query.shape)
+                    tmp = tf.nn.tanh(keys+query)
+                    # print(tmp.shape) # b,n,h
+                    alpha = tf.reduce_sum(self.bah_v*tmp, axis=-1) # b,n
+                    # print(alpha.shape)
                     alpha = tf.nn.softmax(alpha) # b,n
                     # print(alpha.shape)
+                    # input()
 
-                contexts = tf.multiply(tf.expand_dims(alpha, axis=-1), hidden1)  # b,n,h
-                context = tf.reduce_sum(contexts, axis=1)  # b,h
+                    contexts = tf.multiply(tf.expand_dims(alpha, axis=-1), hidden1)  # b,n,h
+                    context = tf.reduce_sum(contexts, axis=1)  # b,h
 
                 # tf.reshape(alpha, (self.batch_size,-1))
                 alphas.append(alpha) # b,n_frame
@@ -532,8 +537,8 @@ def train(restore_path=None):#os.path.join('models', '')):#os.path.join('models'
     if restore_path is None:
         wordtoix, ixtoword, bias_init_vector = preProBuildWordVocab(captions, word_count_threshold=0)
 
-        np.save(os.path.join(model_path, 'wordtoix'), wordtoix)
-        # np.save('./data/ixtoword', ixtoword)
+        # np.save(os.path.join(model_path, 'wordtoix'), wordtoix)
+        np.save(os.path.join(model_path, 'ixtoword'), ixtoword)
         np.save(os.path.join(model_path, 'bias_init_vector'), bias_init_vector)
     else :
         ixtoword = pd.Series(np.load(os.path.join(restore_path, 'ixtoword.npy')).tolist())
@@ -548,7 +553,7 @@ def train(restore_path=None):#os.path.join('models', '')):#os.path.join('models'
                 dim_image=dim_image,
                 n_words=len(wordtoix),
                 dim_hidden=dim_hidden,
-                batch_size=batch_size,
+                scheduled_sampling=scheduled_sampling,
                 # n_lstm_steps=n_frame_step,
                 n_video_lstm_step=n_video_lstm_step,
                 n_caption_lstm_step=n_caption_lstm_step,
@@ -578,7 +583,7 @@ def train(restore_path=None):#os.path.join('models', '')):#os.path.join('models'
         #     fd.write('\n')
         # fd.close()
 
-        saver = tf.train.Saver(max_to_keep=10, var_list=tf.trainable_variables())
+        saver = tf.train.Saver(max_to_keep=30, var_list=tf.trainable_variables())
         if restore_path is not None and not os.path.exists(restore_path):
             print('restore_model path wrong')
             exit(1)
@@ -600,13 +605,17 @@ def train(restore_path=None):#os.path.join('models', '')):#os.path.join('models'
         #new_saver = tf.train.import_meta_graph('./rgb_models/model-1000.meta')
         #new_saver.restore(sess, tf.train.latest_checkpoint('./models/'))
 
-        loss_fd = open('loss_{}.txt'.format(time_id), 'w')
+        loss_fd = open(os.path.join(model_path, 'loss_{}.txt'.format(time_id)), 'w')
         loss_fd.write('\n'.join(prompts))
         [print(x) for x in prompts]
         prompts.clear()
         # loss_to_draw = []
 
         xent = 0.
+
+        history = []
+        convertor = lambda x, y: (x * len(y) - 1) / (len(y) - 1) * 100
+
         if scheduled_sampling:
             # x^1/2, x=0.~1.
             sampling_threshes = [(float(x)/n_epochs)**0.5 for x in range(1, n_epochs+1)]
@@ -733,16 +742,23 @@ def train(restore_path=None):#os.path.join('models', '')):#os.path.join('models'
                 # step += 1
 
             avg_bleu = total_bleu / (step-epoch_start)
-            # prompts.append('{}-{}'.format(step,epoch_start))
+
+            if epoch > save_freq:
+                del history[0]
+            history.append(avg_bleu)
 
             prompts.append(
                 "\nEpoch {} with learning rate {} is done. Avg BLEU is {}".format(epoch, sess.run(learning_rate), avg_bleu))
             if scheduled_sampling:
                 prompts.append('\nSampling rate for this epoch is {}'.format(sampling_threshes[epoch]))
             add_custom_summ(tagname='bleu', tagvalue=avg_bleu, writer=summ_writer, iters=epoch)
-            add_custom_summ(tagname='sampling', tagvalue=sampling_threshes[epoch], writer=summ_writer, iters=epoch)
+            if scheduled_sampling:
+                add_custom_summ(tagname='sampling', tagvalue=sampling_threshes[epoch], writer=summ_writer, iters=epoch)
 
-            if np.mod(epoch+1, save_freq) == 0:
+            ##===== save exceptions ======#
+            thresh = 1.0 if epoch < 20 else np.percentile(history, convertor(0.8, history))
+
+            if avg_bleu >= thresh or np.mod(epoch+1, save_freq) == 0:
                 save_name = os.path.join(model_path,
                                         'loss_{}_{}'.format(
                                             str(tmp).replace('.','@'),
@@ -757,27 +773,30 @@ def train(restore_path=None):#os.path.join('models', '')):#os.path.join('models'
         loss_fd.close()
 
 
-def test(restore_path=os.path.join('models', '20180618_041100'), idx=None):
-    test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
-    test_videos = test_data['video_path'].unique()
+def predict_with_restore(test_videos, restore_path=os.path.join('models', '20180618_041100'), idx=None):
+    # test_data = get_video_test_data(video_test_data_path, video_test_feat_path) # video_path, Description
+    # test_videos = test_data['video_path'].unique()
 
-    ixtoword = pd.Series(np.load(os.path.join(restore_path, 'ixtoword.npy')).tolist())
-    # wordtoix = {v: k for k, v in ixtoword.items()}
+
+
+    wordtoix = pd.Series(np.load(os.path.join(restore_path, 'wordtoix.npy')).tolist())
+    ixtoword = {v: k for k, v in wordtoix.items()}
     bias_init_vector = np.load(os.path.join(restore_path, 'bias_init_vector.npy'))
 
-    if idx is None:
-        idx = input('here are {} videos for testing. Which would you like to choose?\n'.format(len(test_videos)))
-        if idx=='':
-            idx = np.random.choice(len(test_videos))
-            print('sooooo, i randomly choose #{}:{} for you.'.format(idx, test_videos[idx]))
-    print('*********************processing*********************')
+
+    np.save(os.path.join(restore_path, 'ixtoword'), ixtoword)
+
+
+
+    if idx is not None:
+        test_videos = test_videos[idx:idx+1]
 
 
     model = Video_Caption_Generator(
             dim_image=dim_image,
             n_words=len(ixtoword),
             dim_hidden=dim_hidden,
-            batch_size=batch_size,
+            scheduled_sampling=scheduled_sampling,
             # n_lstm_steps=n_frame_step,
             n_video_lstm_step=n_video_lstm_step,
             n_caption_lstm_step=n_caption_lstm_step,
@@ -795,22 +814,63 @@ def test(restore_path=os.path.join('models', '20180618_041100'), idx=None):
         latest_ckpt = tf.train.latest_checkpoint(restore_path)
         saver.restore(sess, latest_ckpt)
 
+    for video_feat_path in test_videos:
+
+    # video_feat_path = test_videos[idx]
+
+        video_feat = np.load(video_feat_path)
+        # batch_size*
+        video_feat = np.expand_dims(video_feat, axis=0)
+
+        generated_word_index, alphas_ = sess.run([caption_tf, alphas], feed_dict={video_tf:video_feat, video_mask_tf:np.ones(video_feat.shape[:2], dtype=np.int)})
+
+        generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
+        yield generated_sentence
+
+
+def test(restore_path=os.path.join('models', '20180618_041100'), idx=None):
+    test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
+    test_videos = test_data['video_path'].unique()
+
+    if idx is None:
+        idx = input('here are {} videos for testing. Which would you like to choose?\n'.format(len(test_videos)))
+        if idx == '':
+            idx = np.random.choice(len(test_videos))
+            print('sooooo, i randomly choose #{}:{} for you.'.format(idx, test_videos[idx]))
+    print('*********************processing*********************')
+
     test_output_txt_fd = open(os.path.join(restore_path, 'S2VT_results.txt'), 'w')
 
-    video_feat_path = test_videos[idx]
+    try:
+        generated_sentence = next(predict_with_restore(test_videos=test_videos, restore_path=restore_path, idx=idx)) # this is a generator
+        print('********************* caption *********************')
+        print(generated_sentence, '\n')
+        test_output_txt_fd.write(test_videos[idx] + '\n')
+        test_output_txt_fd.write(generated_sentence + '\n\n')
+    except :
+        pass
 
-    video_feat = np.load(video_feat_path)
-    # batch_size*
-    video_feat = np.expand_dims(video_feat, axis=0)
 
-    generated_word_index, alphas_ = sess.run([caption_tf, alphas], feed_dict={video_tf:video_feat, video_mask_tf:np.ones(video_feat.shape[:2], dtype=np.int)})
+def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
+    test_data = get_video_test_data(video_test_data_path, video_test_feat_path)
+    test_videos = test_data['video_path'].unique()
+    groups = test_data.groupby('video_path')
+    print(test_data.columns)
 
-    # atn_w = pd.DataFrame(alphas_)
-    # print(atn_w.shape)
-    # print(atn_w.describe())
+    gen = predict_with_restore(test_videos=test_videos, restore_path=restore_path, idx=None)
 
-    generated_sentence = word_indices_to_sentence(ixtoword, generated_word_index)
-    print('********************* caption *********************')
-    print(generated_sentence,'\n')
-    test_output_txt_fd.write(video_feat_path + '\n')
-    test_output_txt_fd.write(generated_sentence + '\n\n')
+    cnt = 0
+    for generated_sentence in gen:
+        # compute the minimum
+        current_vpath = test_videos[cnt]
+        cnt += 1
+        current_captions = groups.get_group(current_vpath) # get all the captions
+        print(current_captions.columns)
+        input()
+        bleus = [BLEU(generated_sentence, ground) for ground in current_captions['Description']]
+        print(generated_sentence, '\n')
+        print(np.mean(bleus))
+
+
+if __name__ == '__main__':
+    validate_all_test()
