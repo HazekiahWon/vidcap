@@ -817,8 +817,6 @@ def predict_with_restore(test_videos, restore_path=os.path.join('models', '20180
 
     for video_feat_path in test_videos:
 
-    # video_feat_path = test_videos[idx]
-
         video_feat = np.load(video_feat_path)
         # batch_size*
         video_feat = np.expand_dims(video_feat, axis=0)
@@ -869,8 +867,11 @@ def validate_all_test(restore_path=os.path.join('models', '20180619_205638')):
         # print(current_captions.columns)
         # input()
         bleus = [BLEU(generated_sentence, ground) for ground in current_captions['Description']]
-        print(generated_sentence, '\n')
-        print(np.mean(bleus))
+        print(generated_sentence)
+        print('average bleu score for video {} is {}'.format(current_vpath.split(os.pathsep))[-1], np.mean(bleus))
+        best_index = np.argmax(bleus)
+        print('the best matched ground truth with bleu={} is\n{}'.format(bleus[best_index],
+                                                                         current_captions['Description'].iloc[best_index]))
 
 
 if __name__ == '__main__':
